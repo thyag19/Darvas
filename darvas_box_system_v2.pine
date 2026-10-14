@@ -5,13 +5,12 @@ indicator("Darvas Box System v2.0", shorttitle="Darvas v2", overlay=true, max_bo
 // DARVAS BOX SYSTEM v2 — evolution of the frozen-spec v1 script
 // (kept unchanged in original/darvas_box_system_original.pine).
 //
-// The core state machine (NO_BOX -> BOX_FORMING -> BOX_CONFIRMED, trailing
-// stop, failed breakout) is the same as v1. Changes are listed in README.md.
-// The frozen core rules are unchanged from v1: K=3 confirmation, independent
+// Core state machine: NO_BOX -> BOX_FORMING -> BOX_CONFIRMED. Changes are listed
+// in README.md. Core rules as frozen: K=3 confirmation, independent
 // top/bottom confirmation, intrabar breakout (high >= box top), invalidation
 // (close below the box bottom), failed breakout (close below the historical
 // box bottom) and the monotonic stop. Every [NEW] input sits
-// outside the core; at its default the core behaves as in v1.
+// outside the core and is neutral at its default.
 //
 //   [SOURCED] = stated in Darvas's original text
 //   [PROXY]   = quantification of something Darvas only described by eye
