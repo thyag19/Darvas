@@ -1,0 +1,283 @@
+//@version=6
+indicator("Darvas Box System v1.0 (Frozen Spec Sections 1-8)", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500)
+
+// =====================================================================
+// DARVAS BOX SYSTEM — mechanical implementation of the frozen spec
+// (Sections 1-8, Darvas & Damir quantification project).
+//
+// Fidelity notes:
+//   [SOURCED] = directly stated in Darvas's original text
+//   [PROXY]   = explicitly agreed quantification of a concept Darvas
+//               left as pure observation ("it just has to be observed
+//               and instantly acted upon" — no fixed formula exists in
+//               the source for box-edge timing, top or bottom).
+// No numeric threshold below is presented as Darvas's own rule unless
+// marked [SOURCED].
+// =====================================================================
+
+// ---- Inputs ----
+k = input.int(3, "Confirmation Bars (K)", minval=1,
+     tooltip="[PROXY] Darvas's source states no fixed bar count for top/bottom confirmation. K quantifies 'a high/low stops being exceeded.' Default 3 per project spec.")
+
+showCandidateLines  = input.bool(true, "Show forming candidate top/bottom")
+showStopLine        = input.bool(true, "Show trailing stop level")
+showHistoricalBoxes = input.bool(true, "Keep historical boxes visible")
+
+colConfirmedBox  = input.color(color.new(color.blue, 0), "Confirmed box")
+colHistoricalBox = input.color(color.new(color.gray, 60), "Historical box (breakout)")
+colFailedBox     = input.color(color.new(color.red, 40), "Historical box (invalidated)")
+colCandidate     = input.color(color.new(color.orange, 0), "Forming candidate lines")
+colStop          = input.color(color.new(color.red, 0), "Stop level")
+
+// ---- Historical box metadata (Section 8 state-variable list) ----
+// One record per box that stops being the active box (via breakout or
+// invalidation), independent of the box.* drawing object used for display.
+type HistoricalBox
+    float top
+    float bottom
+    int   startBar
+    int   endBar
+
+// ---- Persistent multi-bar state ----
+// BREAKOUT / BOX_INVALIDATED / FAILED_BREAKOUT are modeled as same-bar
+// event flags (fire-and-transition within one bar), matching the frozen
+// spec where they are described as momentary transitions, not states
+// that persist across bars in their own right.
+enum BoxState
+    no_box
+    box_forming
+    box_confirmed
+
+var BoxState state = BoxState.no_box
+
+// ---- Candidate top (Section 1) ----
+var float candTop     = na
+var int   topBar       = na
+var int   topCounter   = 0
+var bool  topConfirmed = false
+
+// ---- Candidate bottom (Section 2) ----
+var float candBottom     = na
+var int   bottomBar       = na
+var int   bottomCounter   = 0
+var bool  bottomConfirmed = false
+
+// ---- Frozen box boundaries (Section 2/3) ----
+var float boxTop     = na
+var float boxBottom  = na
+var int   boxLeftBar = na
+
+// ---- Stop mechanism (Section 7, unified with Section 8 amendment) ----
+var float stopLevel       = na
+var bool  breakoutPending = false
+
+// ---- Drawing handle ----
+var box activeBoxId = na
+
+// ---- Historical box array (Section 8 state-variable list) ----
+var array<HistoricalBox> historicalBoxes = array.new<HistoricalBox>()
+
+// ---- Per-bar event flags (fresh each bar, not persistent) ----
+bool evBreakout       = false
+bool evBoxInvalidated = false
+bool evFailedBreakout = false
+
+h = high
+l = low
+c = close
+
+// =====================================================================
+// STATE: NO_BOX  (Section 1 / Section 6)
+// =====================================================================
+if state == BoxState.no_box
+    // [PROXY] No swing-high lookback (L). Any bar's high, the instant
+    // we resume searching, becomes the candidate top — Section 6:
+    // "trivially the highest point since NO_BOX began." No memory of
+    // any prior (failed) box.
+    candTop      := h
+    topBar        := bar_index
+    topCounter    := 0
+    topConfirmed  := false
+    candBottom      := na
+    bottomBar        := na
+    bottomCounter    := 0
+    bottomConfirmed  := false
+    boxTop    := na
+    boxBottom := na
+    state := BoxState.box_forming
+
+// =====================================================================
+// STATE: BOX_FORMING  (Sections 1, 2, 3, 7-Refinement A)
+// =====================================================================
+else if state == BoxState.box_forming
+
+    // --- Top tracking (Section 1) ---
+    // [SOURCED test-basis: intrabar High]  [PROXY: K-bar confirmation]
+    if h > candTop
+        // Genuine new high: candidate moves, its counter resets.
+        // Section 3: a top reset ALSO fully restarts the bottom search
+        // (no carry-over of the previous bottom candidate).
+        candTop      := h
+        topBar        := bar_index
+        topCounter    := 0
+        topConfirmed  := false
+        candBottom      := na
+        bottomBar        := na
+        bottomCounter    := 0
+        bottomConfirmed  := false
+    else
+        topCounter += 1
+        if topCounter >= k
+            topConfirmed := true
+
+    // --- Bottom tracking (Section 2) ---
+    // Starts at candTop's bar + 1. Independent K-bar counter; a bottom
+    // reset does NOT cascade back to the top (asymmetric with above —
+    // Section 3 only specified top-resets-bottom, not the reverse).
+    if bar_index > topBar
+        if na(candBottom)
+            candBottom      := l
+            bottomBar        := bar_index
+            bottomCounter    := 0
+            bottomConfirmed  := false
+        else if l < candBottom
+            candBottom      := l
+            bottomBar        := bar_index
+            bottomCounter    := 0
+            bottomConfirmed  := false
+        else
+            bottomCounter += 1
+            if bottomCounter >= k and not bottomConfirmed
+                bottomConfirmed := true
+                // Section 7 Refinement A: post-breakout, the stop can
+                // trail on bottom-confirmation ALONE, independent of
+                // whether the new box's top has also confirmed yet.
+                if breakoutPending
+                    stopLevel := na(stopLevel) ? candBottom : math.max(stopLevel, candBottom)
+
+    // --- Invalidation watch while forming (post-breakout only) ---
+    // Section 5 amended: unified close < stop_level test; the historical
+    // box's bottom was only stop_level's INITIAL value at breakout.
+    // breakoutPending is included explicitly (not just relied on "by
+    // construction") so this branch's precondition is self-evident from
+    // the condition alone, not from reasoning about unreachable states.
+    if breakoutPending and not na(stopLevel) and c < stopLevel
+        evFailedBreakout := true
+        if showHistoricalBoxes and not na(activeBoxId)
+            box.set_border_color(activeBoxId, colFailedBox)
+            box.set_bgcolor(activeBoxId, color.new(colFailedBox, 90))
+        state := BoxState.no_box
+        stopLevel        := na
+        breakoutPending   := false
+        candTop    := na
+        candBottom := na
+        boxTop     := na
+        boxBottom  := na
+
+    // --- Full box confirmation (Section 2: fires at the LATER of the
+    //     two independent confirmations) ---
+    else if topConfirmed and bottomConfirmed
+        boxTop     := candTop
+        boxBottom  := candBottom
+        boxLeftBar := topBar
+        state := BoxState.box_confirmed
+
+        // Stop initialization / finalization (Section 7)
+        stopLevel := na(stopLevel) ? boxBottom : math.max(stopLevel, boxBottom)
+        breakoutPending := false   // Section 8 Refinement B: FAILED_BREAKOUT window closes here
+
+        if showHistoricalBoxes
+            activeBoxId := box.new(left=boxLeftBar, top=boxTop, right=bar_index, bottom=boxBottom,
+                 border_color=colConfirmedBox, bgcolor=color.new(colConfirmedBox, 90), extend=extend.none)
+
+// =====================================================================
+// STATE: BOX_CONFIRMED  (Sections 2, 4, 5, 7)
+// =====================================================================
+else if state == BoxState.box_confirmed
+
+    if showHistoricalBoxes and not na(activeBoxId)
+        box.set_right(activeBoxId, bar_index)
+
+    // --- Breakout test (Section 4) ---
+    // [SOURCED] on-stop buy-stop order: intrabar touch, no close
+    // confirmation, no volume requirement inside the core mechanics.
+    // NOTE: if a single bar's range spans both a breakout touch AND a
+    // close below the (pre-breakout) stop level, breakout is honored
+    // first (intrabar precedence); the new post-breakout invalidation
+    // watch only begins evaluating from the following bar. This is a
+    // known simplification for wide-range bars, not addressed by the
+    // frozen spec, and is flagged here rather than silently resolved.
+    if h >= boxTop
+        evBreakout := true
+
+        if showHistoricalBoxes and not na(activeBoxId)
+            box.set_border_color(activeBoxId, colHistoricalBox)
+            box.set_bgcolor(activeBoxId, color.new(colHistoricalBox, 95))
+
+        array.push(historicalBoxes, HistoricalBox.new(top=boxTop, bottom=boxBottom, startBar=boxLeftBar, endBar=bar_index))
+
+        candTop      := h
+        topBar        := bar_index
+        topCounter    := 0
+        topConfirmed  := false
+        candBottom      := na
+        bottomBar        := na
+        bottomCounter    := 0
+        bottomConfirmed  := false
+
+        // stopLevel at this point equals max(previous_stop, boxBottom) —
+        // it was already set that way when THIS box confirmed (see the
+        // BOX_FORMING confirmation block above). Section 7: it remains
+        // at that level — the old, just-broken-out-from box's floor —
+        // until a new bottom confirms and potentially raises it further.
+        breakoutPending := true
+        state := BoxState.box_forming
+
+    // --- Invalidation test (Section 5, no prior breakout) ---
+    else if c < stopLevel
+        evBoxInvalidated := true
+
+        if showHistoricalBoxes and not na(activeBoxId)
+            box.set_border_color(activeBoxId, colFailedBox)
+            box.set_bgcolor(activeBoxId, color.new(colFailedBox, 90))
+
+        array.push(historicalBoxes, HistoricalBox.new(top=boxTop, bottom=boxBottom, startBar=boxLeftBar, endBar=bar_index))
+
+        state := BoxState.no_box
+        stopLevel := na
+        candTop    := na
+        candBottom := na
+        boxTop     := na
+        boxBottom  := na
+
+// =====================================================================
+// PLOTTING / CHART-VERIFICATION AIDS
+// =====================================================================
+plot(showCandidateLines and state == BoxState.box_forming and not na(candTop) ? candTop : na,
+     "Candidate Top", color=colCandidate, style=plot.style_circles, linewidth=1)
+plot(showCandidateLines and state == BoxState.box_forming and not na(candBottom) ? candBottom : na,
+     "Candidate Bottom", color=colCandidate, style=plot.style_circles, linewidth=1)
+
+plot(showStopLine and not na(stopLevel) ? stopLevel : na,
+     "Stop Level", color=colStop, style=plot.style_stepline, linewidth=2)
+
+plotshape(evBreakout, title="Breakout", style=shape.triangleup, location=location.belowbar,
+     color=color.green, size=size.small)
+plotshape(evFailedBreakout, title="Failed Breakout", style=shape.xcross, location=location.abovebar,
+     color=color.orange, size=size.small)
+plotshape(evBoxInvalidated, title="Box Invalidated", style=shape.xcross, location=location.abovebar,
+     color=color.red, size=size.small)
+
+// State label at the last bar, for verification against Section 8's table.
+var label stateLabel = na
+if barstate.islast
+    if not na(stateLabel)
+        label.delete(stateLabel)
+    stateTxt = state == BoxState.no_box ? "NO_BOX" :
+         state == BoxState.box_forming ? (breakoutPending ? "BOX_FORMING (post-breakout)" : "BOX_FORMING") :
+         "BOX_CONFIRMED"
+    stateLabel := label.new(bar_index, high, stateTxt, style=label.style_label_down, color=color.black, textcolor=color.white)
+
+alertcondition(evBreakout, "Darvas Breakout", "Darvas box breakout (high >= box top)")
+alertcondition(evFailedBreakout, "Darvas Failed Breakout", "Post-breakout close below stop level")
+alertcondition(evBoxInvalidated, "Darvas Box Invalidated", "Close below confirmed box bottom")

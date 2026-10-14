@@ -1,0 +1,428 @@
+//@version=6
+indicator("Darvas Box System v2.0", shorttitle="Darvas v2", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500)
+
+// =====================================================================
+// DARVAS BOX SYSTEM v2 — evolution of the frozen-spec v1 script
+// (kept unchanged in original/darvas_box_system_original.pine).
+//
+// The core state machine (NO_BOX -> BOX_FORMING -> BOX_CONFIRMED, trailing
+// stop, failed breakout) is the same as v1. Changes are listed in README.md.
+// Setting every "optional" input to its off value reproduces v1, except for
+// the two bug fixes marked [FIX] below.
+//
+//   [SOURCED] = stated in Darvas's original text
+//   [PROXY]   = quantification of something Darvas only described by eye
+//   [FIX]     = behaviour corrected relative to v1
+//   [NEW]     = optional addition, off or neutral by default
+// =====================================================================
+
+// ---- Inputs: box construction ----
+grpBox = "Box construction"
+kTop = input.int(3, "Top confirmation bars", minval=1, group=grpBox,
+     tooltip="[PROXY] Bars that must NOT exceed the candidate top before the top is confirmed. Darvas's text states no fixed count.")
+kBottom = input.int(3, "Bottom confirmation bars", minval=1, group=grpBox,
+     tooltip="[PROXY] Bars that must NOT undercut the candidate bottom before the bottom is confirmed.")
+lbIntra = input.int(50, "New-high lookback: intraday", minval=0, group=grpBox,
+     tooltip="[NEW] A box search only starts on a bar whose high exceeds the highest high of the previous N bars. 0 = off (v1 behaviour: any bar can start a box). Starting points only: experiment per timeframe.")
+lbDaily = input.int(60, "New-high lookback: daily", minval=0, group=grpBox)
+lbWeekly = input.int(26, "New-high lookback: weekly and above", minval=0, group=grpBox)
+trendLen = input.int(0, "Trend filter: close above SMA (0 = off)", minval=0, group=grpBox,
+     tooltip="[NEW] Only start a box search while the close is above this simple moving average. Darvas's boxes work best inside an uptrend.")
+
+// ---- Inputs: breakout ----
+grpBo = "Breakout"
+breakoutBasis = input.string("High (intrabar)", "Breakout trigger", options=["High (intrabar)", "Close"], group=grpBo,
+     tooltip="[SOURCED] Darvas used an on-stop buy order, i.e. an intrabar touch (default, as v1). 'Close' requires a closing price beyond the box top and filters wick noise.")
+breakoutBuffer = input.float(0.0, "Breakout buffer above top (%)", minval=0.0, step=0.05, group=grpBo,
+     tooltip="[NEW] Price must exceed the box top by this percentage. Models the 'tick above the high' of a buy-stop. 0 = strictly above the top.")
+volLen = input.int(50, "Volume average length", minval=1, group=grpBo)
+volMult = input.float(1.5, "Strong-breakout volume multiple (0 = off)", minval=0.0, step=0.1, group=grpBo,
+     tooltip="[NEW] Darvas wanted a significant volume increase on a breakout. A breakout whose volume is at least this multiple of the prior average is marked STRONG. This only classifies; it never blocks a breakout.")
+
+// ---- Inputs: stop ----
+grpStop = "Stop"
+stopBasis = input.string("Close", "Stop trigger", options=["Close", "Low (intrabar)"], group=grpStop,
+     tooltip="Close below the stop level (v1 / spec default), or an intrabar low through it. Take losses quickly.")
+
+// ---- Inputs: display ----
+grpDisp = "Display"
+showBoxes           = input.bool(true, "Draw boxes", group=grpDisp)
+showHistoricalBoxes = input.bool(true, "Keep completed boxes visible", group=grpDisp)
+showFormingBox      = input.bool(true, "Draw provisional (forming) box", group=grpDisp)
+showCandidateLines  = input.bool(true, "Show forming candidate top/bottom", group=grpDisp)
+showStopLine        = input.bool(true, "Show trailing stop level", group=grpDisp)
+showTrigger         = input.bool(true, "Show breakout (buy-stop) price", group=grpDisp)
+showTable           = input.bool(true, "Show statistics table", group=grpDisp)
+tablePosIn          = input.string("Top right", "Table position", options=["Top right", "Top left", "Bottom right", "Bottom left"], group=grpDisp)
+
+colConfirmedBox  = input.color(color.new(color.blue, 0), "Confirmed box", group=grpDisp)
+colFormingBox    = input.color(color.new(color.orange, 30), "Forming box", group=grpDisp)
+colHistoricalBox = input.color(color.new(color.gray, 60), "Completed box (breakout)", group=grpDisp)
+colFailedBox     = input.color(color.new(color.red, 40), "Completed box (failed / invalidated)", group=grpDisp)
+colCandidate     = input.color(color.new(color.orange, 0), "Forming candidate lines", group=grpDisp)
+colStop          = input.color(color.new(color.red, 0), "Stop level", group=grpDisp)
+colTrigger       = input.color(color.new(color.green, 0), "Breakout price", group=grpDisp)
+
+// ---- Derived settings ----
+bool breakOnClose = breakoutBasis == "Close"
+bool stopOnLow    = stopBasis == "Low (intrabar)"
+int  lookback     = timeframe.isintraday ? lbIntra : timeframe.isdaily ? lbDaily : lbWeekly
+tblPos = tablePosIn == "Top right" ? position.top_right :
+     tablePosIn == "Top left" ? position.top_left :
+     tablePosIn == "Bottom right" ? position.bottom_right : position.bottom_left
+
+// ---- Historical box record (Section 8 state-variable list) ----
+// One record per box that stops being the active box (via breakout or
+// invalidation), independent of the box.* drawing object used for display.
+type HistoricalBox
+    float  top
+    float  bottom
+    int    startBar
+    int    endBar
+    bool   brokeOut
+
+// BREAKOUT / BOX_INVALIDATED / FAILED_BREAKOUT are same-bar event flags
+// (fire-and-transition within one bar), not persistent states.
+enum BoxState
+    no_box
+    box_forming
+    box_confirmed
+
+var BoxState state = BoxState.no_box
+
+// ---- Candidate top ----
+var float candTop     = na
+var int   topBar       = na
+var int   topCounter   = 0
+var bool  topConfirmed = false
+
+// ---- Candidate bottom ----
+var float candBottom     = na
+var int   bottomBar       = na
+var int   bottomCounter   = 0
+var bool  bottomConfirmed = false
+
+// ---- Frozen box boundaries ----
+var float boxTop     = na
+var float boxBottom  = na
+var int   boxLeftBar = na
+
+// ---- Stop mechanism ----
+var float stopLevel       = na
+var bool  breakoutPending = false
+
+// ---- Drawing handles ----
+var box activeBoxId = na
+var box formBoxId   = na
+
+// ---- History and simple trade statistics ----
+var array<HistoricalBox> historicalBoxes = array.new<HistoricalBox>()
+var float entryPx   = na
+var int   nTrades   = 0
+var int   nWins     = 0
+var float sumWin    = 0.0
+var float sumLoss   = 0.0
+
+// ---- Per-bar event flags and values ----
+bool  evBreakout       = false
+bool  evBoxInvalidated = false
+bool  evFailedBreakout = false
+bool  evBoxConfirmed   = false
+bool  evStrong         = false
+float entryFill        = na
+float exitFill         = na
+
+h = high
+l = low
+c = close
+
+// ---- Per-bar calculations (global scope so history is always built) ----
+float priorHigh = ta.highest(high, math.max(lookback, 1))[1]
+float trendMa   = ta.sma(close, math.max(trendLen, 1))
+float volAvg    = ta.sma(volume, volLen)[1]
+bool  newHighOk = lookback <= 0 or h > priorHigh
+bool  trendOk   = trendLen <= 0 or c > trendMa
+bool  volStrong = volMult <= 0 or (not na(volAvg) and volume >= volAvg * volMult)
+
+// =====================================================================
+// STATE: NO_BOX
+// =====================================================================
+if state == BoxState.no_box
+    // [NEW] A box search starts only on a genuine new high (and, optionally,
+    // inside an uptrend). With lookback = 0 and trendLen = 0 any bar starts
+    // a search, exactly as in v1.
+    if newHighOk and trendOk
+        candTop      := h
+        topBar        := bar_index
+        topCounter    := 0
+        topConfirmed  := false
+        candBottom      := na
+        bottomBar        := na
+        bottomCounter    := 0
+        bottomConfirmed  := false
+        boxTop    := na
+        boxBottom := na
+        state := BoxState.box_forming
+
+// =====================================================================
+// STATE: BOX_FORMING
+// =====================================================================
+else if state == BoxState.box_forming
+
+    // --- Top tracking ---
+    // [FIX] A bar whose high merely EQUALS the candidate top counts as
+    // "not exceeded" here, so the breakout test below uses strict '>' too.
+    // v1 used '>=' for the breakout, so the same bar was a non-event while
+    // forming but a breakout once the box was confirmed.
+    if h > candTop
+        candTop      := h
+        topBar        := bar_index
+        topCounter    := 0
+        topConfirmed  := false
+        // A top reset fully restarts the bottom search.
+        candBottom      := na
+        bottomBar        := na
+        bottomCounter    := 0
+        bottomConfirmed  := false
+    else
+        topCounter += 1
+        if topCounter >= kTop
+            topConfirmed := true
+
+    // --- Bottom tracking (starts the bar after the candidate top) ---
+    // A bottom reset does not cascade back to the top.
+    if bar_index > topBar
+        if na(candBottom)
+            candBottom      := l
+            bottomBar        := bar_index
+            bottomCounter    := 0
+            bottomConfirmed  := false
+        else if l < candBottom
+            candBottom      := l
+            bottomBar        := bar_index
+            bottomCounter    := 0
+            bottomConfirmed  := false
+        else
+            bottomCounter += 1
+            if bottomCounter >= kBottom and not bottomConfirmed
+                bottomConfirmed := true
+                // Post-breakout the stop trails on bottom confirmation alone.
+                if breakoutPending
+                    stopLevel := na(stopLevel) ? candBottom : math.max(stopLevel, candBottom)
+
+    // --- Failed-breakout watch (post-breakout only) ---
+    bool failedNow = breakoutPending and not na(stopLevel) and (stopOnLow ? l < stopLevel : c < stopLevel)
+    if failedNow
+        evFailedBreakout := true
+        exitFill := stopOnLow ? math.min(open, stopLevel) : c
+        if not na(activeBoxId)
+            if showHistoricalBoxes
+                box.set_border_color(activeBoxId, colFailedBox)
+                box.set_bgcolor(activeBoxId, color.new(colFailedBox, 90))
+            else
+                box.delete(activeBoxId)
+            activeBoxId := na
+        state := BoxState.no_box
+        stopLevel        := na
+        breakoutPending   := false
+        candTop    := na
+        candBottom := na
+        boxTop     := na
+        boxBottom  := na
+
+    // --- Box confirmation: fires at the LATER of the two confirmations ---
+    else if topConfirmed and bottomConfirmed
+        evBoxConfirmed := true
+        boxTop     := candTop
+        boxBottom  := candBottom
+        boxLeftBar := topBar
+        state := BoxState.box_confirmed
+
+        stopLevel := na(stopLevel) ? boxBottom : math.max(stopLevel, boxBottom)
+        breakoutPending := false   // failed-breakout window closes here
+
+        activeBoxId := showBoxes ? box.new(left=boxLeftBar, top=boxTop, right=bar_index, bottom=boxBottom,
+             border_color=colConfirmedBox, bgcolor=color.new(colConfirmedBox, 90), extend=extend.none) : na
+
+// =====================================================================
+// STATE: BOX_CONFIRMED
+// =====================================================================
+else if state == BoxState.box_confirmed
+
+    if not na(activeBoxId)
+        box.set_right(activeBoxId, bar_index)
+
+    float trigger = boxTop * (1 + breakoutBuffer / 100)
+
+    // --- Breakout test ---
+    // [FIX] strict '>' (see top tracking). [NEW] optional close basis and buffer.
+    // Known simplification kept from v1: if one bar both breaks out and closes
+    // below the stop, the breakout is honoured and the stop is first evaluated
+    // on the next bar.
+    if (breakOnClose ? c > trigger : h > trigger)
+        evBreakout := true
+        evStrong   := volStrong
+        // [NEW] Gap-aware buy-stop fill: a gap above the trigger fills at the open.
+        entryFill := breakOnClose ? c : math.max(open, trigger)
+
+        // The handle is kept so a later failed breakout can recolour this box.
+        if not na(activeBoxId)
+            if showHistoricalBoxes
+                box.set_border_color(activeBoxId, colHistoricalBox)
+                box.set_bgcolor(activeBoxId, color.new(colHistoricalBox, 95))
+            else
+                box.delete(activeBoxId)
+                activeBoxId := na
+
+        array.push(historicalBoxes, HistoricalBox.new(boxTop, boxBottom, boxLeftBar, bar_index, true))
+        // [FIX] v1 never trimmed this array; cap it so long histories stay light.
+        if array.size(historicalBoxes) > 500
+            array.shift(historicalBoxes)
+
+        candTop      := h
+        topBar        := bar_index
+        topCounter    := 0
+        topConfirmed  := false
+        candBottom      := na
+        bottomBar        := na
+        bottomCounter    := 0
+        bottomConfirmed  := false
+
+        // stopLevel already equals max(previous stop, boxBottom); it stays
+        // there until a new bottom confirms and raises it.
+        breakoutPending := true
+        state := BoxState.box_forming
+
+    // --- Invalidation (no prior breakout from this box) ---
+    else if (stopOnLow ? l < stopLevel : c < stopLevel)
+        evBoxInvalidated := true
+        exitFill := stopOnLow ? math.min(open, stopLevel) : c
+
+        if not na(activeBoxId)
+            if showHistoricalBoxes
+                box.set_border_color(activeBoxId, colFailedBox)
+                box.set_bgcolor(activeBoxId, color.new(colFailedBox, 90))
+            else
+                box.delete(activeBoxId)
+            activeBoxId := na
+
+        array.push(historicalBoxes, HistoricalBox.new(boxTop, boxBottom, boxLeftBar, bar_index, false))
+        if array.size(historicalBoxes) > 500
+            array.shift(historicalBoxes)
+
+        state := BoxState.no_box
+        stopLevel := na
+        candTop    := na
+        candBottom := na
+        boxTop     := na
+        boxBottom  := na
+
+// =====================================================================
+// SIMPLE TRADE LOG (long only, first breakout enters, stop event exits;
+// stacked boxes do not add size). Close-to-close style estimate, no
+// commissions or slippage. Indicative, not a backtest.
+// =====================================================================
+if evBreakout and na(entryPx)
+    entryPx := entryFill
+
+if not na(exitFill) and not na(entryPx)
+    float ret = (exitFill / entryPx - 1) * 100
+    nTrades += 1
+    if ret > 0
+        nWins += 1
+        sumWin += ret
+    else
+        sumLoss += ret
+    entryPx := na
+
+// =====================================================================
+// PROVISIONAL BOX (dashed) while a box is forming
+// =====================================================================
+if showBoxes and showFormingBox and state == BoxState.box_forming and not na(candTop) and not na(candBottom)
+    if na(formBoxId)
+        formBoxId := box.new(left=topBar, top=candTop, right=bar_index, bottom=candBottom,
+             border_color=colFormingBox, border_style=line.style_dashed, bgcolor=na)
+    else
+        box.set_lefttop(formBoxId, topBar, candTop)
+        box.set_rightbottom(formBoxId, bar_index, candBottom)
+else if not na(formBoxId)
+    box.delete(formBoxId)
+    formBoxId := na
+
+// =====================================================================
+// PLOTS
+// =====================================================================
+plot(showCandidateLines and state == BoxState.box_forming and not na(candTop) ? candTop : na,
+     "Candidate Top", color=colCandidate, style=plot.style_circles, linewidth=1)
+plot(showCandidateLines and state == BoxState.box_forming and not na(candBottom) ? candBottom : na,
+     "Candidate Bottom", color=colCandidate, style=plot.style_circles, linewidth=1)
+
+plot(showStopLine and not na(stopLevel) ? stopLevel : na,
+     "Stop Level", color=colStop, style=plot.style_stepline, linewidth=2)
+
+// [NEW] Breakout price while a confirmed box is active.
+plot(showTrigger and state == BoxState.box_confirmed ? boxTop * (1 + breakoutBuffer / 100) : na,
+     "Breakout Price", color=colTrigger, style=plot.style_linebr, linewidth=1)
+
+plotshape(evBoxConfirmed, title="Box Confirmed", style=shape.diamond, location=location.abovebar,
+     color=color.new(color.blue, 0), size=size.tiny)
+plotshape(evBreakout and evStrong, title="Strong Breakout", style=shape.triangleup, location=location.belowbar,
+     color=color.green, size=size.normal)
+plotshape(evBreakout and not evStrong, title="Weak Breakout", style=shape.triangleup, location=location.belowbar,
+     color=color.new(color.green, 55), size=size.small)
+plotshape(evFailedBreakout, title="Failed Breakout", style=shape.xcross, location=location.abovebar,
+     color=color.orange, size=size.small)
+plotshape(evBoxInvalidated, title="Box Invalidated", style=shape.xcross, location=location.abovebar,
+     color=color.red, size=size.small)
+
+// ---- State label on the last bar ----
+var label stateLabel = na
+if barstate.islast
+    if not na(stateLabel)
+        label.delete(stateLabel)
+    string stateTxt = state == BoxState.no_box ? "NO_BOX" :
+         state == BoxState.box_forming ? (breakoutPending ? "BOX_FORMING (post-breakout)" : "BOX_FORMING") :
+         "BOX_CONFIRMED"
+    if state == BoxState.box_confirmed
+        stateTxt += "\nBuy above " + str.tostring(boxTop * (1 + breakoutBuffer / 100), format.mintick)
+    if not na(stopLevel)
+        stateTxt += "\nStop " + str.tostring(stopLevel, format.mintick)
+    stateLabel := label.new(bar_index, high, stateTxt, style=label.style_label_down, color=color.black, textcolor=color.white)
+
+// ---- Statistics table ----
+var table statsTbl = table.new(tblPos, 2, 8, bgcolor=color.new(color.black, 20), border_width=1, border_color=color.new(color.gray, 50))
+if barstate.islast and showTable
+    int   nDone = array.size(historicalBoxes)
+    int   nBo   = 0
+    float sumHt = 0.0
+    float sumWd = 0.0
+    for hb in historicalBoxes
+        nBo += hb.brokeOut ? 1 : 0
+        sumHt += (hb.top / hb.bottom - 1) * 100
+        sumWd += hb.endBar - hb.startBar
+    int   nLoss = nTrades - nWins
+    float pf    = sumLoss < 0 ? sumWin / -sumLoss : na
+
+    table.cell(statsTbl, 0, 0, "Completed boxes", text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(statsTbl, 1, 0, str.tostring(nDone), text_color=color.white, text_size=size.small)
+    table.cell(statsTbl, 0, 1, "Broke out", text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(statsTbl, 1, 1, nDone > 0 ? str.tostring(nBo / nDone * 100, "#") + "%" : "-", text_color=color.white, text_size=size.small)
+    table.cell(statsTbl, 0, 2, "Avg box height", text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(statsTbl, 1, 2, nDone > 0 ? str.tostring(sumHt / nDone, "#.##") + "%" : "-", text_color=color.white, text_size=size.small)
+    table.cell(statsTbl, 0, 3, "Avg box width", text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(statsTbl, 1, 3, nDone > 0 ? str.tostring(sumWd / nDone, "#.#") + " bars" : "-", text_color=color.white, text_size=size.small)
+    table.cell(statsTbl, 0, 4, "Trades (closed)", text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(statsTbl, 1, 4, str.tostring(nTrades), text_color=color.white, text_size=size.small)
+    table.cell(statsTbl, 0, 5, "Win rate", text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(statsTbl, 1, 5, nTrades > 0 ? str.tostring(nWins / nTrades * 100, "#") + "%" : "-", text_color=color.white, text_size=size.small)
+    table.cell(statsTbl, 0, 6, "Avg win / avg loss", text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(statsTbl, 1, 6, nWins > 0 and nLoss > 0 ? str.tostring(sumWin / nWins, "#.#") + "% / " + str.tostring(sumLoss / nLoss, "#.#") + "%" : "-", text_color=color.white, text_size=size.small)
+    table.cell(statsTbl, 0, 7, "Profit factor", text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(statsTbl, 1, 7, na(pf) ? "-" : str.tostring(pf, "#.##"), text_color=color.white, text_size=size.small)
+
+// ---- Alerts ----
+alertcondition(evBoxConfirmed, "Darvas Box Confirmed", "Darvas box confirmed (top and bottom set)")
+alertcondition(evBreakout, "Darvas Breakout", "Darvas box breakout above box top")
+alertcondition(evBreakout and evStrong, "Darvas Strong Breakout", "Darvas box breakout on high volume")
+alertcondition(evFailedBreakout, "Darvas Failed Breakout", "Post-breakout stop level breached")
+alertcondition(evBoxInvalidated, "Darvas Box Invalidated", "Confirmed box bottom / stop level breached")
