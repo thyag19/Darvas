@@ -2,52 +2,48 @@
 indicator("Darvas Box System v2.0", shorttitle="Darvas v2", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500)
 
 // =====================================================================
-// DARVAS BOX SYSTEM v2 — evolution of the frozen-spec v1 script
-// (kept unchanged in original/darvas_box_system_original.pine).
+// DARVAS BOX SYSTEM v2 — implements the approved working specification in
+// DARVAS_SPEC.md (not a recovered historical document). The original v1
+// script is kept unchanged in original/darvas_box_system_original.pine.
 //
-// Core state machine: NO_BOX -> BOX_FORMING -> BOX_CONFIRMED. Changes are listed
-// in README.md. Core rules as frozen: K=3 confirmation, independent
-// top/bottom confirmation, intrabar breakout (high >= box top), invalidation
-// (close below the box bottom), failed breakout (close below the historical
-// box bottom) and the monotonic stop. Every [NEW] input sits
-// outside the core and is neutral at its default.
+// Core (DARVAS_SPEC.md rules 1-10): K=3 top/bottom confirmation with
+// independent counters, intrabar breakout (high >= box top), invalidation
+// (close < confirmed box bottom), failed breakout (close < broken box's
+// bottom), monotonic stop, completed boxes preserved.
 //
-//   [SOURCED] = stated in Darvas's original text
-//   [PROXY]   = quantification of something Darvas only described by eye
-//   [FIX]     = housekeeping fix that does not alter the frozen rules
-//   [NEW]     = optional addition, off or neutral by default
+// Everything in the "Optional extensions" group, plus volume classification,
+// drawing and the statistics table, sits outside the core. At default
+// settings none of it alters core behaviour.
 // =====================================================================
 
 // ---- Inputs: box construction ----
 grpBox = "Box construction"
 kTop = input.int(3, "Top confirmation bars", minval=1, group=grpBox,
-     tooltip="[PROXY] Bars that must NOT exceed the candidate top before the top is confirmed. Darvas's text states no fixed count.")
+     tooltip="Bars that must not make a strictly higher high before the top is confirmed. Core default K=3.")
 kBottom = input.int(3, "Bottom confirmation bars", minval=1, group=grpBox,
-     tooltip="[PROXY] Bars that must NOT undercut the candidate bottom before the bottom is confirmed.")
+     tooltip="Bars that must not make a strictly lower low before the bottom is confirmed. Core default K=3.")
 
 // ---- Inputs: OPTIONAL EXTENSIONS (not part of the frozen core; all off by default) ----
 grpExt = "Optional extensions (not frozen spec)"
 lbIntra = input.int(0, "New-high lookback: intraday", minval=0, group=grpExt,
-     tooltip="[NEW] A box search only starts on a bar whose high exceeds the highest high of the previous N bars. 0 = off (v1 behaviour: any bar can start a box). Optional extension, NOT part of the frozen spec. Default 0 keeps the frozen core.")
+     tooltip="Optional extension, NOT part of the core spec. A box search only starts on a bar whose high exceeds the highest high of the previous N bars. 0 = off (core: any bar can start a search).")
 lbDaily = input.int(0, "New-high lookback: daily", minval=0, group=grpExt)
 lbWeekly = input.int(0, "New-high lookback: weekly and above", minval=0, group=grpExt)
 trendLen = input.int(0, "Trend filter: close above SMA (0 = off)", minval=0, group=grpExt,
-     tooltip="[NEW] Only start a box search while the close is above this simple moving average. Optional extension, NOT part of the frozen spec. 0 = off.")
+     tooltip="Optional extension, NOT part of the core spec. Only start a box search while the close is above this SMA. 0 = off.")
 
-// ---- Inputs: breakout ----
-grpBo = "Breakout"
-breakoutBasis = input.string("High (intrabar)", "Breakout trigger", options=["High (intrabar)", "Close"], group=grpBo,
-     tooltip="[SOURCED] Darvas used an on-stop buy order, i.e. an intrabar touch (default, as v1). 'Close' requires a closing price beyond the box top and filters wick noise.")
-breakoutBuffer = input.float(0.0, "Breakout buffer above top (%)", minval=0.0, step=0.05, group=grpBo,
-     tooltip="[NEW] Price must exceed the box top by this percentage. Models the 'tick above the high' of a buy-stop. 0 = trigger at the box top (frozen rule: high >= box top).")
+breakoutBasis = input.string("High (intrabar)", "Breakout trigger", options=["High (intrabar)", "Close"], group=grpExt,
+     tooltip="Core rule: intrabar high >= box top (default). 'Close' is an optional extension that changes the core breakout rule.")
+breakoutBuffer = input.float(0.0, "Breakout buffer above top (%)", minval=0.0, step=0.05, group=grpExt,
+     tooltip="Core rule: trigger at the box top (0). Any value above 0 is an optional extension that changes the core breakout rule.")
+stopBasis = input.string("Close", "Invalidation / failed-breakout trigger", options=["Close", "Low (intrabar)"], group=grpExt,
+     tooltip="Core rule: close below the box bottom (default). 'Low (intrabar)' is an optional extension that changes both the invalidation and failed-breakout rules.")
+
+// ---- Inputs: breakout volume classification (labels only, never blocks a breakout) ----
+grpBo = "Breakout volume (classification only)"
 volLen = input.int(50, "Volume average length", minval=1, group=grpBo)
 volMult = input.float(1.5, "Strong-breakout volume multiple (0 = off)", minval=0.0, step=0.1, group=grpBo,
-     tooltip="[NEW] Darvas wanted a significant volume increase on a breakout. A breakout whose volume is at least this multiple of the prior average is marked STRONG. This only classifies; it never blocks a breakout.")
-
-// ---- Inputs: stop ----
-grpStop = "Stop"
-stopBasis = input.string("Close", "Stop trigger", options=["Close", "Low (intrabar)"], group=grpStop,
-     tooltip="Close below the stop level (v1 / spec default), or an intrabar low through it. Take losses quickly.")
+     tooltip="A breakout whose volume is at least this multiple of the prior average is marked STRONG. This only classifies; it never blocks a breakout (core rule 5: no volume requirement).")
 
 // ---- Inputs: display ----
 grpDisp = "Display"
@@ -55,9 +51,9 @@ showBoxes           = input.bool(true, "Draw boxes", group=grpDisp)
 showHistoricalBoxes = input.bool(true, "Keep completed boxes visible", group=grpDisp)
 showFormingBox      = input.bool(true, "Draw provisional (forming) box", group=grpDisp)
 showCandidateLines  = input.bool(true, "Show forming candidate top/bottom", group=grpDisp)
-showStopLine        = input.bool(true, "Show trailing stop level", group=grpDisp)
+showStopLine        = input.bool(true, "Show monotonic stop level", group=grpDisp)
 showTrigger         = input.bool(true, "Show breakout (buy-stop) price", group=grpDisp)
-showTable           = input.bool(true, "Show statistics table", group=grpDisp)
+showTable           = input.bool(true, "Show statistics table (indicative only)", group=grpDisp)
 tablePosIn          = input.string("Top right", "Table position", options=["Top right", "Top left", "Bottom right", "Bottom left"], group=grpDisp)
 
 colConfirmedBox  = input.color(color.new(color.blue, 0), "Confirmed box", group=grpDisp)
@@ -76,7 +72,7 @@ tblPos = tablePosIn == "Top right" ? position.top_right :
      tablePosIn == "Top left" ? position.top_left :
      tablePosIn == "Bottom right" ? position.bottom_right : position.bottom_left
 
-// ---- Historical box record (Section 8 state-variable list) ----
+// ---- Completed-box record (rule 10: completed boxes are preserved) ----
 // One record per box that stops being the active box (via breakout or
 // invalidation), independent of the box.* drawing object used for display.
 type HistoricalBox
@@ -107,13 +103,13 @@ var int   bottomBar       = na
 var int   bottomCounter   = 0
 var bool  bottomConfirmed = false
 
-// ---- Frozen box boundaries ----
+// ---- Confirmed box boundaries ----
 var float boxTop     = na
 var float boxBottom  = na
 var int   boxLeftBar = na
 
 // ---- Stop mechanism ----
-var float stopLevel       = na   // monotonic: only ever raised, never reset or lowered
+var float stopLevel       = na   // rule 8: only ever raised (max of confirmed bottoms), never reset or lowered
 var float brokenBottom    = na   // bottom of the box most recently broken out of (failed-breakout reference)
 var bool  breakoutPending = false
 
@@ -154,9 +150,9 @@ bool  volStrong = volMult <= 0 or (not na(volAvg) and volume >= volAvg * volMult
 // STATE: NO_BOX
 // =====================================================================
 if state == BoxState.no_box
-    // [NEW] A box search starts only on a genuine new high (and, optionally,
-    // inside an uptrend). With lookback = 0 and trendLen = 0 any bar starts
-    // a search, exactly as in v1.
+    // Core: any bar starts a search, with no cooldown after an invalidation or
+    // failed breakout. Optional extensions (lookback, trend filter) gate this
+    // and are off by default.
     if newHighOk and trendOk
         candTop      := h
         topBar        := bar_index
@@ -213,7 +209,8 @@ else if state == BoxState.box_forming
                     stopLevel := na(stopLevel) ? candBottom : math.max(stopLevel, candBottom)
 
     // --- Failed-breakout watch (post-breakout only) ---
-    // Failed breakout: close below the historical box's bottom (not the ratcheting stop).
+    // Rule 7: close below the broken box's bottom (not the ratcheting stop).
+    // Evaluated from the bar after the breakout bar.
     bool failedNow = breakoutPending and not na(brokenBottom) and (stopOnLow ? l < brokenBottom : c < brokenBottom)
     if failedNow
         evFailedBreakout := true
@@ -259,15 +256,14 @@ else if state == BoxState.box_confirmed
     float trigger = boxTop * (1 + breakoutBuffer / 100)
 
     // --- Breakout test ---
-    // Frozen rule: intrabar high >= box top. With the default buffer of 0 the
-    // trigger equals the box top. [NEW] optional close basis and buffer.
-    // Known simplification kept from v1: if one bar both breaks out and closes
-    // below the stop, the breakout is honoured and the stop is first evaluated
-    // on the next bar.
+    // Rule 5: intrabar high >= box top (default buffer 0, so trigger = box top).
+    // Precedence: if one bar both reaches the top and closes below the box
+    // bottom, the breakout wins (rule 9 terminates the box on that bar) and the
+    // failed-breakout test (rule 7) first applies on the next bar.
     if (breakOnClose ? c > trigger : h >= trigger)
         evBreakout := true
         evStrong   := volStrong
-        // [NEW] Gap-aware buy-stop fill: a gap above the trigger fills at the open.
+        // Statistics only: gap-aware buy-stop fill: a gap above the trigger fills at the open.
         entryFill := breakOnClose ? c : math.max(open, trigger)
 
         // The handle is kept so a later failed breakout can recolour this box.
@@ -280,9 +276,6 @@ else if state == BoxState.box_confirmed
                 activeBoxId := na
 
         array.push(historicalBoxes, HistoricalBox.new(boxTop, boxBottom, boxLeftBar, bar_index, true))
-        // [FIX] v1 never trimmed this array; cap it so long histories stay light.
-        if array.size(historicalBoxes) > 500
-            array.shift(historicalBoxes)
 
         candTop      := h
         topBar        := bar_index
@@ -294,13 +287,14 @@ else if state == BoxState.box_confirmed
         bottomConfirmed  := false
 
         brokenBottom := boxBottom
-        // stopLevel already equals max(previous stop, boxBottom); it stays
-        // there until a new bottom confirms and raises it.
+        // Rule 9: candTop above is the breakout bar's high, with no gap.
+        // stopLevel already equals max(previous stop, boxBottom); it only
+        // rises when a later bottom confirms.
         breakoutPending := true
         state := BoxState.box_forming
 
-    // --- Invalidation (no prior breakout from this box) ---
-    else if (stopOnLow ? l < boxBottom : c < boxBottom)   // frozen: close < box bottom
+    // --- Invalidation (rule 6: close < confirmed box bottom) ---
+    else if (stopOnLow ? l < boxBottom : c < boxBottom)
         evBoxInvalidated := true
         exitFill := stopOnLow ? math.min(open, boxBottom) : c
 
@@ -313,8 +307,6 @@ else if state == BoxState.box_confirmed
             activeBoxId := na
 
         array.push(historicalBoxes, HistoricalBox.new(boxTop, boxBottom, boxLeftBar, bar_index, false))
-        if array.size(historicalBoxes) > 500
-            array.shift(historicalBoxes)
 
         state := BoxState.no_box
         candTop    := na
@@ -324,8 +316,8 @@ else if state == BoxState.box_confirmed
 
 // =====================================================================
 // SIMPLE TRADE LOG (long only, first breakout enters, stop event exits;
-// stacked boxes do not add size). Close-to-close style estimate, no
-// commissions or slippage. Indicative, not a backtest.
+// stacked boxes do not add size). INDICATIVE ONLY, not a validated backtest:
+// no commissions, slippage, position sizing or intrabar-order modelling.
 // =====================================================================
 if evBreakout and na(entryPx)
     entryPx := entryFill
@@ -365,7 +357,7 @@ plot(showCandidateLines and state == BoxState.box_forming and not na(candBottom)
 plot(showStopLine and not na(stopLevel) ? stopLevel : na,
      "Stop Level", color=colStop, style=plot.style_stepline, linewidth=2)
 
-// [NEW] Breakout price while a confirmed box is active.
+// Breakout price while a confirmed box is active.
 plot(showTrigger and state == BoxState.box_confirmed ? boxTop * (1 + breakoutBuffer / 100) : na,
      "Breakout Price", color=colTrigger, style=plot.style_linebr, linewidth=1)
 
@@ -395,7 +387,7 @@ if barstate.islast
     stateLabel := label.new(bar_index, high, stateTxt, style=label.style_label_down, color=color.black, textcolor=color.white)
 
 // ---- Statistics table ----
-var table statsTbl = table.new(tblPos, 2, 8, bgcolor=color.new(color.black, 20), border_width=1, border_color=color.new(color.gray, 50))
+var table statsTbl = table.new(tblPos, 2, 9, bgcolor=color.new(color.black, 20), border_width=1, border_color=color.new(color.gray, 50))
 if barstate.islast and showTable
     int   nDone = array.size(historicalBoxes)
     int   nBo   = 0
@@ -424,10 +416,12 @@ if barstate.islast and showTable
     table.cell(statsTbl, 1, 6, nWins > 0 and nLoss > 0 ? str.tostring(sumWin / nWins, "#.#") + "% / " + str.tostring(sumLoss / nLoss, "#.#") + "%" : "-", text_color=color.white, text_size=size.small)
     table.cell(statsTbl, 0, 7, "Profit factor", text_color=color.white, text_halign=text.align_left, text_size=size.small)
     table.cell(statsTbl, 1, 7, na(pf) ? "-" : str.tostring(pf, "#.##"), text_color=color.white, text_size=size.small)
+    table.cell(statsTbl, 0, 8, "INDICATIVE ONLY - not a validated backtest", text_color=color.yellow, text_size=size.tiny)
+    table.merge_cells(statsTbl, 0, 8, 1, 8)
 
 // ---- Alerts ----
 alertcondition(evBoxConfirmed, "Darvas Box Confirmed", "Darvas box confirmed (top and bottom set)")
-alertcondition(evBreakout, "Darvas Breakout", "Darvas box breakout above box top")
+alertcondition(evBreakout, "Darvas Breakout", "Darvas box breakout (high at or above box top)")
 alertcondition(evBreakout and evStrong, "Darvas Strong Breakout", "Darvas box breakout on high volume")
-alertcondition(evFailedBreakout, "Darvas Failed Breakout", "Post-breakout stop level breached")
-alertcondition(evBoxInvalidated, "Darvas Box Invalidated", "Confirmed box bottom / stop level breached")
+alertcondition(evFailedBreakout, "Darvas Failed Breakout", "Close below the broken box bottom after a breakout")
+alertcondition(evBoxInvalidated, "Darvas Box Invalidated", "Close below confirmed box bottom")
