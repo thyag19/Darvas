@@ -24,7 +24,7 @@
 - **Extra alerts:** box confirmed and strong breakout.
 
 ## Frozen core (unchanged)
-K=3 confirmation, independent top/bottom confirmation, intrabar breakout (`high >= box top`), invalidation (close below the stop level) and the monotonic stop.
+K=3 confirmation, independent top/bottom confirmation, intrabar breakout (`high >= box top`), invalidation (close below the confirmed box bottom), failed breakout (close below the historical box bottom) and the monotonic stop (never reset or lowered, including across invalidations and failed breakouts).
 
 ## Open design questions (not changed)
 0. With `>=` for the breakout, a bar whose high exactly equals the candidate top is a non-event while forming but a breakout once confirmed. This is the frozen behaviour and is left as is.

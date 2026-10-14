@@ -9,7 +9,8 @@ indicator("Darvas Box System v2.0", shorttitle="Darvas v2", overlay=true, max_bo
 // stop, failed breakout) is the same as v1. Changes are listed in README.md.
 // The frozen core rules are unchanged from v1: K=3 confirmation, independent
 // top/bottom confirmation, intrabar breakout (high >= box top), invalidation
-// (close below the stop level) and the monotonic stop. Every [NEW] input sits
+// (close below the box bottom), failed breakout (close below the historical
+// box bottom) and the monotonic stop. Every [NEW] input sits
 // outside the core; at its default the core behaves as in v1.
 //
 //   [SOURCED] = stated in Darvas's original text
@@ -113,7 +114,8 @@ var float boxBottom  = na
 var int   boxLeftBar = na
 
 // ---- Stop mechanism ----
-var float stopLevel       = na
+var float stopLevel       = na   // monotonic: only ever raised, never reset or lowered
+var float brokenBottom    = na   // bottom of the box most recently broken out of (failed-breakout reference)
 var bool  breakoutPending = false
 
 // ---- Drawing handles ----
@@ -212,10 +214,11 @@ else if state == BoxState.box_forming
                     stopLevel := na(stopLevel) ? candBottom : math.max(stopLevel, candBottom)
 
     // --- Failed-breakout watch (post-breakout only) ---
-    bool failedNow = breakoutPending and not na(stopLevel) and (stopOnLow ? l < stopLevel : c < stopLevel)
+    // Failed breakout: close below the historical box's bottom (not the ratcheting stop).
+    bool failedNow = breakoutPending and not na(brokenBottom) and (stopOnLow ? l < brokenBottom : c < brokenBottom)
     if failedNow
         evFailedBreakout := true
-        exitFill := stopOnLow ? math.min(open, stopLevel) : c
+        exitFill := stopOnLow ? math.min(open, brokenBottom) : c
         if not na(activeBoxId)
             if showHistoricalBoxes
                 box.set_border_color(activeBoxId, colFailedBox)
@@ -224,7 +227,7 @@ else if state == BoxState.box_forming
                 box.delete(activeBoxId)
             activeBoxId := na
         state := BoxState.no_box
-        stopLevel        := na
+        brokenBottom      := na
         breakoutPending   := false
         candTop    := na
         candBottom := na
@@ -241,6 +244,7 @@ else if state == BoxState.box_forming
 
         stopLevel := na(stopLevel) ? boxBottom : math.max(stopLevel, boxBottom)
         breakoutPending := false   // failed-breakout window closes here
+        brokenBottom    := na
 
         activeBoxId := showBoxes ? box.new(left=boxLeftBar, top=boxTop, right=bar_index, bottom=boxBottom,
              border_color=colConfirmedBox, bgcolor=color.new(colConfirmedBox, 90), extend=extend.none) : na
@@ -290,15 +294,16 @@ else if state == BoxState.box_confirmed
         bottomCounter    := 0
         bottomConfirmed  := false
 
+        brokenBottom := boxBottom
         // stopLevel already equals max(previous stop, boxBottom); it stays
         // there until a new bottom confirms and raises it.
         breakoutPending := true
         state := BoxState.box_forming
 
     // --- Invalidation (no prior breakout from this box) ---
-    else if (stopOnLow ? l < stopLevel : c < stopLevel)
+    else if (stopOnLow ? l < boxBottom : c < boxBottom)   // frozen: close < box bottom
         evBoxInvalidated := true
-        exitFill := stopOnLow ? math.min(open, stopLevel) : c
+        exitFill := stopOnLow ? math.min(open, boxBottom) : c
 
         if not na(activeBoxId)
             if showHistoricalBoxes
@@ -313,7 +318,6 @@ else if state == BoxState.box_confirmed
             array.shift(historicalBoxes)
 
         state := BoxState.no_box
-        stopLevel := na
         candTop    := na
         candBottom := na
         boxTop     := na
