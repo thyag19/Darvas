@@ -7,12 +7,14 @@ indicator("Darvas Box System v2.0", shorttitle="Darvas v2", overlay=true, max_bo
 //
 // The core state machine (NO_BOX -> BOX_FORMING -> BOX_CONFIRMED, trailing
 // stop, failed breakout) is the same as v1. Changes are listed in README.md.
-// Setting every "optional" input to its off value reproduces v1, except for
-// the two bug fixes marked [FIX] below.
+// The frozen core rules are unchanged from v1: K=3 confirmation, independent
+// top/bottom confirmation, intrabar breakout (high >= box top), invalidation
+// (close below the stop level) and the monotonic stop. Every [NEW] input sits
+// outside the core; at its default the core behaves as in v1.
 //
 //   [SOURCED] = stated in Darvas's original text
 //   [PROXY]   = quantification of something Darvas only described by eye
-//   [FIX]     = behaviour corrected relative to v1
+//   [FIX]     = housekeeping fix that does not alter the frozen rules
 //   [NEW]     = optional addition, off or neutral by default
 // =====================================================================
 
@@ -22,19 +24,22 @@ kTop = input.int(3, "Top confirmation bars", minval=1, group=grpBox,
      tooltip="[PROXY] Bars that must NOT exceed the candidate top before the top is confirmed. Darvas's text states no fixed count.")
 kBottom = input.int(3, "Bottom confirmation bars", minval=1, group=grpBox,
      tooltip="[PROXY] Bars that must NOT undercut the candidate bottom before the bottom is confirmed.")
-lbIntra = input.int(50, "New-high lookback: intraday", minval=0, group=grpBox,
-     tooltip="[NEW] A box search only starts on a bar whose high exceeds the highest high of the previous N bars. 0 = off (v1 behaviour: any bar can start a box). Starting points only: experiment per timeframe.")
-lbDaily = input.int(60, "New-high lookback: daily", minval=0, group=grpBox)
-lbWeekly = input.int(26, "New-high lookback: weekly and above", minval=0, group=grpBox)
-trendLen = input.int(0, "Trend filter: close above SMA (0 = off)", minval=0, group=grpBox,
-     tooltip="[NEW] Only start a box search while the close is above this simple moving average. Darvas's boxes work best inside an uptrend.")
+
+// ---- Inputs: OPTIONAL EXTENSIONS (not part of the frozen core; all off by default) ----
+grpExt = "Optional extensions (not frozen spec)"
+lbIntra = input.int(0, "New-high lookback: intraday", minval=0, group=grpExt,
+     tooltip="[NEW] A box search only starts on a bar whose high exceeds the highest high of the previous N bars. 0 = off (v1 behaviour: any bar can start a box). Optional extension, NOT part of the frozen spec. Default 0 keeps the frozen core.")
+lbDaily = input.int(0, "New-high lookback: daily", minval=0, group=grpExt)
+lbWeekly = input.int(0, "New-high lookback: weekly and above", minval=0, group=grpExt)
+trendLen = input.int(0, "Trend filter: close above SMA (0 = off)", minval=0, group=grpExt,
+     tooltip="[NEW] Only start a box search while the close is above this simple moving average. Optional extension, NOT part of the frozen spec. 0 = off.")
 
 // ---- Inputs: breakout ----
 grpBo = "Breakout"
 breakoutBasis = input.string("High (intrabar)", "Breakout trigger", options=["High (intrabar)", "Close"], group=grpBo,
      tooltip="[SOURCED] Darvas used an on-stop buy order, i.e. an intrabar touch (default, as v1). 'Close' requires a closing price beyond the box top and filters wick noise.")
 breakoutBuffer = input.float(0.0, "Breakout buffer above top (%)", minval=0.0, step=0.05, group=grpBo,
-     tooltip="[NEW] Price must exceed the box top by this percentage. Models the 'tick above the high' of a buy-stop. 0 = strictly above the top.")
+     tooltip="[NEW] Price must exceed the box top by this percentage. Models the 'tick above the high' of a buy-stop. 0 = trigger at the box top (frozen rule: high >= box top).")
 volLen = input.int(50, "Volume average length", minval=1, group=grpBo)
 volMult = input.float(1.5, "Strong-breakout volume multiple (0 = off)", minval=0.0, step=0.1, group=grpBo,
      tooltip="[NEW] Darvas wanted a significant volume increase on a breakout. A breakout whose volume is at least this multiple of the prior average is marked STRONG. This only classifies; it never blocks a breakout.")
@@ -170,10 +175,6 @@ if state == BoxState.no_box
 else if state == BoxState.box_forming
 
     // --- Top tracking ---
-    // [FIX] A bar whose high merely EQUALS the candidate top counts as
-    // "not exceeded" here, so the breakout test below uses strict '>' too.
-    // v1 used '>=' for the breakout, so the same bar was a non-event while
-    // forming but a breakout once the box was confirmed.
     if h > candTop
         candTop      := h
         topBar        := bar_index
@@ -255,11 +256,12 @@ else if state == BoxState.box_confirmed
     float trigger = boxTop * (1 + breakoutBuffer / 100)
 
     // --- Breakout test ---
-    // [FIX] strict '>' (see top tracking). [NEW] optional close basis and buffer.
+    // Frozen rule: intrabar high >= box top. With the default buffer of 0 the
+    // trigger equals the box top. [NEW] optional close basis and buffer.
     // Known simplification kept from v1: if one bar both breaks out and closes
     // below the stop, the breakout is honoured and the stop is first evaluated
     // on the next bar.
-    if (breakOnClose ? c > trigger : h > trigger)
+    if (breakOnClose ? c > trigger : h >= trigger)
         evBreakout := true
         evStrong   := volStrong
         // [NEW] Gap-aware buy-stop fill: a gap above the trigger fills at the open.
