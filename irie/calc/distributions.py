@@ -186,7 +186,7 @@ def analyze_distributions(instrument: Instrument, events: Sequence[DistributionE
     else:
         m["ttm_dpu"] = ok("ttm_dpu", as_of, ttm.total, "INR/unit", wflags, ttm.source_ids,
                           [("payments", str(ttm.n))])
-    m["payments_ttm"] = ok("payments_ttm", as_of, Decimal(ttm.n), "count") if ttm.n else \
+    m["payments_ttm"] = ok("payments_ttm", as_of, Decimal(ttm.n), "count", (), ttm.source_ids) if ttm.n else \
         withheld("payments_ttm", as_of, Status.UNAVAILABLE, ["NO_TTM_DISTRIBUTIONS"], "count")
 
     # --- price ---

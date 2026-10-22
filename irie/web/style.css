@@ -1,0 +1,22 @@
+:root{--bg:#fff;--fg:#1c2330;--muted:#5b6678;--line:#d9dee7;--accent:#1f5fbf;--inc:#1f5fbf;--oth:#8a6d00;--cap:#c0392b;--grey:#9aa3b2;--warn:#fff4d6;--bad:#fde3e1}
+@media (prefers-color-scheme:dark){:root{--bg:#12161d;--fg:#e6e9ef;--muted:#9aa5b8;--line:#2b3340;--accent:#6aa3ff;--inc:#6aa3ff;--oth:#d9b84a;--cap:#ff7b6b;--grey:#667085;--warn:#3a3114;--bad:#40201d}}
+*{box-sizing:border-box}body{margin:0;padding:0 16px 32px;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,sans-serif}
+h1{font-size:1.4rem;margin:16px 0 4px}h2{font-size:1.1rem;margin:24px 0 8px}small{color:var(--muted);font-weight:400}
+.note,#meta{color:var(--muted);font-size:.85rem;margin:6px 0}
+#notice{margin:8px 0;padding:8px 12px;border:1px solid var(--line);border-radius:6px}#notice.preview{background:var(--bad);font-weight:600}
+#alerts .alert{background:var(--warn);border:1px solid var(--line);padding:6px 10px;margin:4px 0;border-radius:6px}
+#cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:12px 0}
+.card{border:1px solid var(--line);border-radius:8px;padding:10px}.card b{display:block;font-size:1.5rem}.card span{color:var(--muted);font-size:.8rem}
+.filters{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:end;margin:12px 0}.filters label{display:flex;flex-direction:column;font-size:.8rem;color:var(--muted)}
+.filters label:has(input[type=checkbox]){flex-direction:row;align-items:center;gap:6px}
+input,select,button{font:inherit;padding:5px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)}button{cursor:pointer}
+.tablewrap{overflow-x:auto}table{border-collapse:collapse;width:100%;min-width:760px}
+th,td{padding:6px 8px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}th:first-child,td:first-child,th:nth-child(2),td:nth-child(2),th:nth-child(3),td:nth-child(3){text-align:left}
+th button{border:0;background:none;font-weight:600;padding:0}th[aria-sort=ascending] button::after{content:" \25B2"}th[aria-sort=descending] button::after{content:" \25BC"}
+tbody tr{cursor:pointer}tbody tr:hover,tr.sel{background:color-mix(in srgb,var(--accent) 10%,transparent)}
+.star{border:0;background:none;font-size:1.1rem;padding:0 4px}.na{color:var(--muted)}.wh{color:var(--muted);font-style:italic}
+.badge{display:inline-block;font-size:.7rem;border:1px solid var(--line);border-radius:10px;padding:0 6px;margin-left:4px;color:var(--muted)}.badge.bad{background:var(--bad)}.badge.ok{color:inherit}
+svg text{fill:var(--fg);font-size:11px}.legend span{margin-right:12px;font-size:.8rem}.sw{display:inline-block;width:10px;height:10px;margin-right:4px}
+#detail{border:1px solid var(--line);border-radius:8px;padding:12px;margin:16px 0}#detail table{min-width:0}
+footer{margin-top:28px;color:var(--muted);font-size:.8rem}
+@media (max-width:600px){body{padding:0 12px 24px}}

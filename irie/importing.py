@@ -16,8 +16,8 @@ from decimal import Decimal, InvalidOperation
 from typing import Dict, Iterable, List, Mapping, Optional
 
 from .calc.distributions import TOLERANCE
-from .models import (ALLOWED_COMPONENTS, ComponentType, DistributionEvent, Instrument, NavKind, NavPoint,
-                     PricePoint, SourceGrade, VERIFIED_GRADES)
+from .models import (ALLOWED_COMPONENTS, ComponentType, DistributionEvent, Instrument, InstrumentType, LeverageDefinition,
+                     LeveragePoint, NavKind, NavPoint, PricePoint, SourceGrade, VERIFIED_GRADES, ETFCategory)
 
 REJECT, REVIEW, INFO = "REJECT", "REVIEW", "INFO"
 COMPONENT_COLUMNS = {"interest": ComponentType.INTEREST, "dividend": ComponentType.DIVIDEND,
@@ -175,7 +175,7 @@ def import_distributions(text: str, instruments: Mapping[str, Instrument], *, as
             rep.add(lineno, REVIEW, "UNKNOWN_SOURCE_ID", f"source {sid!r} is not in the source register")
         if total is not None and grade not in VERIFIED_GRADES:
             rep.add(lineno, INFO, "UNVERIFIED_AMOUNT_SOURCE", f"amount grade {grade.value}: flagged UNVERIFIED_SOURCE in metrics")
-        h = hashlib.sha1(repr(sig).encode()).hexdigest()[:10]
+        h = hashlib.sha1(repr(sig + (sid, grade.value)).encode()).hexdigest()[:10]
         ev = DistributionEvent(f"{key}:{ex.isoformat()}:{h}", key, ex, rec, total, comps, include, grade, sid,
                                (row.get("period_label") or "").strip(), (row.get("status_text") or "").strip(),
                                (row.get("notes") or "").strip())
@@ -247,4 +247,61 @@ def import_navs(text: str, instruments: Mapping[str, Instrument], *, as_of: Opti
                     f"{key} {d} {kind.value}: already {seen[k]}"); continue
         seen[k] = nav
         rep.accepted.append(NavPoint(key, d, nav, kind, grade, (row.get("source_id") or "").strip()))
+    return rep
+
+
+def import_leverage(text: str, instruments: Mapping[str, Instrument], *, as_of: Optional[dt.date] = None) -> ImportReport:
+    rep, rd = _read(text, ["instrument_key", "date", "value", "definition"], "leverage")
+    seen: Dict[tuple, Decimal] = {}
+    for lineno, row in enumerate(rd, start=2):
+        rep.rows_read += 1
+        rep.raw[lineno] = dict(row)
+        key = (row.get("instrument_key") or "").strip()
+        if key not in instruments:
+            rep.add(lineno, REJECT, "UNKNOWN_INSTRUMENT", f"{key!r} is not in the instrument list"); continue
+        try:
+            d = _date(row["date"]); v = _dec(row["value"])
+            definition = LeverageDefinition((row.get("definition") or "").strip().upper())
+            grade = SourceGrade((row.get("grade") or "UNKNOWN").strip().upper())
+        except ValueError as e:
+            rep.add(lineno, REJECT, "BAD_VALUE", str(e)); continue
+        if v is None:
+            rep.add(lineno, REJECT, "BAD_NUMBER", "value is blank (blank is not zero)"); continue
+        if as_of is not None and d > as_of:
+            rep.add(lineno, REJECT, "DATE_AFTER_AS_OF", f"{d} is after as_of {as_of}"); continue
+        k = (key, d, definition)
+        if k in seen:
+            rep.add(lineno, REJECT, "DUPLICATE_RECORD" if seen[k] == v else "CONFLICTING_DUPLICATE", f"{key} {d}"); continue
+        seen[k] = v
+        rep.accepted.append(LeveragePoint(key, d, v, definition, grade, (row.get("source_id") or "").strip(),
+                                          (row.get("definition_note") or "").strip()))
+    return rep
+
+
+def import_instruments(text: str) -> ImportReport:
+    """Instrument universe file: key,name,type[,etf_category,distributes,isin,nse_symbol,bse_symbol,bse_scrip]."""
+    rep, rd = _read(text, ["key", "name", "type"], "instruments")
+    seen = set()
+    for lineno, row in enumerate(rd, start=2):
+        rep.rows_read += 1
+        rep.raw[lineno] = dict(row)
+        key = (row.get("key") or "").strip()
+        try:
+            if not key or not (row.get("name") or "").strip():
+                raise ValueError("key and name are required")
+            typ = InstrumentType((row.get("type") or "").strip().upper())
+            cat = ETFCategory(row["etf_category"].strip().upper()) if (row.get("etf_category") or "").strip() else None
+            dist = {"Y": True, "N": False, "": None}[(row.get("distributes") or "").strip().upper()]
+        except (ValueError, KeyError) as e:
+            rep.add(lineno, REJECT, "BAD_VALUE", str(e)); continue
+        if cat is not None and typ is not InstrumentType.ETF:
+            rep.add(lineno, REJECT, "CATEGORY_ONLY_FOR_ETF", f"{key}: etf_category given for {typ.value}"); continue
+        if typ is InstrumentType.ETF and cat is None:
+            rep.add(lineno, REVIEW, "ETF_WITHOUT_CATEGORY", f"{key}: category-specific metrics stay unavailable")
+        if key in seen:
+            rep.add(lineno, REJECT, "DUPLICATE_RECORD", key); continue
+        seen.add(key)
+        syms = {k: (row.get(c) or "").strip() for k, c in (("NSE", "nse_symbol"), ("BSE", "bse_symbol"), ("BSE_SCRIP", "bse_scrip"))}
+        rep.accepted.append(Instrument(key, row["name"].strip(), typ, cat, dist, (row.get("isin") or "").strip() or None,
+                                       {k: v for k, v in syms.items() if v}))
     return rep

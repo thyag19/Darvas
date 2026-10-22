@@ -113,7 +113,8 @@ def tracking_difference(instrument: Instrument, navs: Sequence[NavPoint], benchm
     flags = ["BENCHMARK_LICENCE_NOT_CLEARED"]
     if instrument.distributes:
         flags.append("EXCLUDES_DISTRIBUTIONS")
-    return ok(name, as_of, f[0] - b[0], "ratio", flags, (), [("fund_return", str(f[0])), ("benchmark_return", str(b[0]))])
+    return ok(name, as_of, f[0] - b[0], "ratio", flags, {n.source_id for n in navs if n.source_id},
+              [("fund_return", str(f[0])), ("benchmark_return", str(b[0]))])
 
 
 def trailing_distribution_yield(instrument: Instrument, events: Sequence[DistributionEvent],

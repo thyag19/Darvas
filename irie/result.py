@@ -20,7 +20,7 @@ class Status(str, enum.Enum):
 # Flags that stop a figure being treated as publishable. Other flags are caveats shown to the reader.
 BLOCKING_FLAGS = frozenset({
     "UNVERIFIED_SOURCE", "PRICE_STALE", "AMOUNT_UNAVAILABLE_IN_WINDOW", "COMPONENTS_DO_NOT_RECONCILE",
-    "NAV_UNVERIFIED", "NAV_STALE", "LEVERAGE_UNVERIFIED",
+    "NAV_UNVERIFIED", "NAV_STALE", "LEVERAGE_UNVERIFIED", "SOURCE_DISCREPANCY",
 })
 
 
@@ -64,6 +64,8 @@ def publish_decision(result: MetricResult, sources: Mapping[str, Source]) -> tup
     if not result.ok:
         reasons.append(f"status {result.status.value}")
     reasons += [f"blocking flag {f}" for f in result.flags if f in BLOCKING_FLAGS]
+    if result.ok and not result.source_ids:
+        reasons.append("no source attribution")          # a figure without provenance is never publishable
     for sid in result.source_ids:
         src = sources.get(sid)
         if src is None:

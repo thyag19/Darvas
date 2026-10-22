@@ -1,0 +1,36 @@
+# Hourly refresh interface. INERT until the repository variable IRIE_REFRESH_ENABLED is set to 'true'.
+# It runs `irie run-cycle` (sources marked NOT_CLEARED are logged and skipped, never fetched), then builds a PUBLIC-mode
+# site as a build artifact. It deploys nothing. Persistent state lives in the Actions cache (best effort): for real
+# operation run the same two commands on infrastructure you control, with operator data in a private inbox.
+# GitHub disables scheduled workflows after 60 days without repository activity.
+name: hourly-refresh
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: refresh
+  cancel-in-progress: false
+jobs:
+  refresh:
+    if: ${{ vars.IRIE_REFRESH_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/cache@v4
+        with:
+          path: irie.sqlite
+          key: irie-db-${{ github.run_id }}
+          restore-keys: irie-db-
+      - run: python -m irie.cli run-cycle --db irie.sqlite --registry config/sources.json --inbox inbox
+      - run: python -m irie.cli build-site --db irie.sqlite --registry config/sources.json --out dist --mode public
+      - uses: actions/upload-artifact@v4
+        with:
+          name: site
+          path: dist

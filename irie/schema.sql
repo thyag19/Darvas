@@ -48,8 +48,10 @@ CREATE TABLE price_eod (
     trade_date      DATE NOT NULL,
     venue           TEXT NOT NULL DEFAULT '',
     close           NUMERIC NOT NULL CHECK (close > 0),
-    source_id       TEXT REFERENCES source(source_id),
-    PRIMARY KEY (instrument_key, trade_date, venue)
+    source_id       TEXT NOT NULL REFERENCES source(source_id),
+    retrieved_at    TEXT,            -- UTC ISO-8601: when WE fetched it (trade_date = when the market observed it, IST date)
+    document_id     TEXT REFERENCES source_document(document_id),
+    PRIMARY KEY (instrument_key, trade_date, venue, source_id)
 );
 
 CREATE TABLE nav (
@@ -58,9 +60,10 @@ CREATE TABLE nav (
     kind            TEXT NOT NULL CHECK (kind IN ('FAIR_VALUE','BOOK','FUND_NAV')),
     nav             NUMERIC NOT NULL CHECK (nav > 0),
     grade           TEXT NOT NULL DEFAULT 'UNKNOWN' CHECK (grade IN ('EXCHANGE','ISSUER','REGULATOR','AGGREGATOR','UNKNOWN')),
-    source_id       TEXT REFERENCES source(source_id),
+    source_id       TEXT NOT NULL REFERENCES source(source_id),
     document_id     TEXT REFERENCES source_document(document_id),
-    PRIMARY KEY (instrument_key, nav_date, kind)
+    retrieved_at    TEXT,
+    PRIMARY KEY (instrument_key, nav_date, kind, source_id)
 );
 
 CREATE TABLE leverage (
@@ -70,8 +73,9 @@ CREATE TABLE leverage (
     value           NUMERIC NOT NULL,
     definition_note TEXT NOT NULL DEFAULT '',
     grade           TEXT NOT NULL DEFAULT 'UNKNOWN' CHECK (grade IN ('EXCHANGE','ISSUER','REGULATOR','AGGREGATOR','UNKNOWN')),
-    source_id       TEXT REFERENCES source(source_id),
-    PRIMARY KEY (instrument_key, as_of_date, definition)
+    source_id       TEXT NOT NULL REFERENCES source(source_id),
+    retrieved_at    TEXT,
+    PRIMARY KEY (instrument_key, as_of_date, definition, source_id)
 );
 
 CREATE TABLE unit_count (
@@ -116,6 +120,7 @@ CREATE TABLE distribution_event (
     notes           TEXT NOT NULL DEFAULT '',
     review_status   TEXT NOT NULL DEFAULT 'OK' CHECK (review_status IN ('OK','NEEDS_REVIEW')),
     run_id          TEXT REFERENCES import_run(run_id),
+    retrieved_at    TEXT,
     CHECK (include_flag = 0 OR total_per_unit IS NOT NULL)   -- an included row must have an amount
 );
 CREATE INDEX ix_distribution_event_key_ex ON distribution_event (instrument_key, ex_date);
@@ -155,4 +160,36 @@ CREATE TABLE fundamental (            -- typed curated fields: occupancy, WALE, 
     grade           TEXT NOT NULL DEFAULT 'UNKNOWN' CHECK (grade IN ('EXCHANGE','ISSUER','REGULATOR','AGGREGATOR','UNKNOWN')),
     source_id       TEXT REFERENCES source(source_id),
     PRIMARY KEY (instrument_key, metric_key, period_end)
+);
+
+-- ---- M2: acquisition audit, freshness and discrepancy handling ---------------------------------------------
+CREATE TABLE retrieval_log (          -- one row per source per attempt, INCLUDING skipped and failed attempts
+    retrieval_id     TEXT PRIMARY KEY,
+    source_id        TEXT NOT NULL REFERENCES source(source_id),
+    started_at       TEXT NOT NULL,   -- UTC ISO-8601 retrieval time
+    finished_at      TEXT NOT NULL,
+    status           TEXT NOT NULL CHECK (status IN ('OK','NO_NEW_DATA','SKIPPED_NOT_CLEARED','SKIPPED_DISABLED',
+                                                     'SKIPPED_NOT_DUE','ERROR')),
+    attempts         INTEGER NOT NULL DEFAULT 0,
+    documents        INTEGER NOT NULL DEFAULT 0,
+    rows_accepted    INTEGER NOT NULL DEFAULT 0,
+    rows_rejected    INTEGER NOT NULL DEFAULT 0,
+    observed_through DATE,            -- latest market-observation date contained in the data (NOT the retrieval date)
+    error            TEXT
+);
+CREATE INDEX ix_retrieval_log_source ON retrieval_log (source_id, started_at);
+
+CREATE TABLE discrepancy (            -- cross-source disagreement; both observations are kept, nothing is overwritten
+    instrument_key  TEXT NOT NULL REFERENCES instrument(instrument_key),
+    field           TEXT NOT NULL CHECK (field IN ('price','nav','distribution','leverage')),
+    ref_date        DATE NOT NULL,
+    source_a        TEXT NOT NULL,
+    value_a         TEXT NOT NULL,
+    source_b        TEXT NOT NULL,
+    value_b         TEXT NOT NULL,
+    abs_diff        TEXT NOT NULL,
+    detected_at     TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN','RESOLVED')),
+    resolution_note TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (instrument_key, field, ref_date, source_a, source_b)
 );

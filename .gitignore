@@ -3,3 +3,7 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 tests/fixtures/invit_workbook_v4/
+inbox/
+*.sqlite
+site/
+dist/
