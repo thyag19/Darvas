@@ -114,12 +114,12 @@ def test_rate_limiter_enforces_minimum_gap():
 # ---- cycle ------------------------------------------------------------------------------------------------
 def test_not_cleared_sources_are_logged_but_never_fetched():
     class Boom:
-        def fetch(self, spec, as_of):
+        def fetch(self, spec, as_of, kinds=None):
             raise AssertionError("fetched a NOT_CLEARED source")
     conn = st.connect(); st.init_schema(conn)
     reg = load_registry(ROOT / "config" / "sources.json")
     class Empty:
-        def fetch(self, spec, as_of):
+        def fetch(self, spec, as_of, kinds=None):
             return []
     fetchers = {k: (Empty() if reg[k].may_fetch else Boom()) for k in reg}
     rep = ingest.run_cycle(conn, reg, fetchers, Clock(), sleep=lambda s: None)
@@ -173,7 +173,7 @@ def test_cycle_is_idempotent_and_respects_cadence(env):
 def test_failure_is_isolated_retried_and_makes_source_stale(env):
     class Down:
         n = 0
-        def fetch(self, spec, as_of):
+        def fetch(self, spec, as_of, kinds=None):
             Down.n += 1
             raise ingest.FetchError("timeout")
     reg = {"INBOX": spec(), "BAD": spec("BAD", max_attempts=3)}
@@ -202,7 +202,7 @@ def test_bad_documents_are_rejected_without_stopping_the_cycle(env):
 
 def test_document_hash_mismatch_is_a_permanent_error(env):
     class Tampered:
-        def fetch(self, spec, as_of):
+        def fetch(self, spec, as_of, kinds=None):
             return [ingest.RawDocument("INBOX", "prices_x.csv", T0, "0" * 64, PRICE.encode())]
     rep = ingest.run_cycle(env["conn"], env["reg"], {"INBOX": Tampered()}, env["clock"], sleep=lambda s: None)
     assert rep.outcomes[0].status == "ERROR" and "sha256" in rep.outcomes[0].error

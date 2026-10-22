@@ -43,6 +43,9 @@ class SourceSpec:
     min_interval_s: float = 2.0                # minimum gap between requests to this source
     max_staleness_s: int = 7200                # FRESH only if the last good retrieval is younger than this
     max_attempts: int = 3
+    schedule: str = "local"                    # local | market_hours | daily | market_and_daily (see irie.scheduler)
+    daily_time: str = "19:00"                  # IST, off-hours, for the once-a-day non-price check
+    synthetic: bool = False                    # invented data (irie.demo); shown with a SYNTHETIC label
     notes: str = ""
 
     def to_source(self) -> Source:
@@ -70,6 +73,16 @@ def validate(specs: Mapping[str, SourceSpec]) -> None:
             problems.append(f"{s.source_id}: USER_SUPPLIED is for file_inbox sources")
         if s.cadence_s < 60 or s.min_interval_s < 0 or s.max_attempts < 1:
             problems.append(f"{s.source_id}: invalid cadence/rate/attempt settings")
+        if s.schedule not in ("local", "market_hours", "daily", "market_and_daily"):
+            problems.append(f"{s.source_id}: unknown schedule {s.schedule!r}")
+        if s.kind == "http" and s.schedule == "local":
+            problems.append(f"{s.source_id}: an external (http) source cannot use the local schedule")
+        if s.kind == "file_inbox" and s.schedule != "local":
+            problems.append(f"{s.source_id}: inbox sources read local files and use the local schedule")
+        try:
+            h, m = s.daily_time.split(":"); assert 0 <= int(h) < 24 and 0 <= int(m) < 60
+        except Exception:
+            problems.append(f"{s.source_id}: daily_time must be HH:MM")
     if problems:
         raise RegistryError("; ".join(problems))
 
@@ -86,7 +99,8 @@ def parse_registry(obj: dict) -> Dict[str, SourceSpec]:
             r.get("terms_url", ""), dt.date.fromisoformat(chk) if chk else None, r.get("clearance_evidence", ""),
             bool(r.get("display_cleared", False)), r.get("display_evidence", ""), bool(r.get("enabled", True)),
             int(r.get("cadence_s", 3600)), float(r.get("min_interval_s", 2.0)), int(r.get("max_staleness_s", 7200)),
-            int(r.get("max_attempts", 3)), r.get("notes", ""))
+            int(r.get("max_attempts", 3)), r.get("schedule", "local" if r["kind"] == "file_inbox" else "market_and_daily"),
+            r.get("daily_time", "19:00"), bool(r.get("synthetic", False)), r.get("notes", ""))
     validate(specs)
     return specs
 

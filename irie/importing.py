@@ -305,3 +305,94 @@ def import_instruments(text: str) -> ImportReport:
         rep.accepted.append(Instrument(key, row["name"].strip(), typ, cat, dist, (row.get("isin") or "").strip() or None,
                                        {k: v for k, v in syms.items() if v}))
     return rep
+
+
+NEWS_CATEGORIES = ("REIT", "INVIT", "INFRASTRUCTURE", "CORPORATE", "OTHER")
+_CTRL = __import__("re").compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+
+
+def _clean(v: Optional[str], limit: int) -> str:
+    return _CTRL.sub("", (v or "").strip())[:limit]
+
+
+def import_news(text: str, instruments: Mapping[str, Instrument], *, now: Optional[dt.datetime] = None) -> ImportReport:
+    """news_*.csv: published_at (ISO-8601 WITH timezone), headline; optional summary, url (http/https only), publisher,
+    category, instrument_key. A timestamp without a timezone is ambiguous and rejected, never guessed."""
+    from .models import NewsItem
+    rep, rd = _read(text, ["published_at", "headline"], "news")
+    seen = set()
+    for lineno, row in enumerate(rd, start=2):
+        rep.rows_read += 1
+        rep.raw[lineno] = dict(row)
+        raw_ts = (row.get("published_at") or "").strip()
+        try:
+            ts = dt.datetime.fromisoformat(raw_ts.replace("Z", "+00:00"))
+        except ValueError:
+            rep.add(lineno, REJECT, "BAD_TIMESTAMP", f"{raw_ts!r} is not ISO-8601 (e.g. 2026-10-22T09:30:00+05:30)"); continue
+        if ts.tzinfo is None:
+            rep.add(lineno, REJECT, "AMBIGUOUS_TIMEZONE", f"{raw_ts!r} has no timezone offset; not guessed"); continue
+        headline = _clean(row.get("headline"), 300)
+        if not headline:
+            rep.add(lineno, REJECT, "MISSING_HEADLINE", "headline is blank"); continue
+        url = (row.get("url") or "").strip()
+        if url and not url.lower().startswith(("http://", "https://")):
+            rep.add(lineno, REJECT, "UNSAFE_URL", f"only http(s) links are accepted, got {url[:40]!r}"); continue
+        cat = (row.get("category") or "OTHER").strip().upper()
+        if cat not in NEWS_CATEGORIES:
+            rep.add(lineno, REJECT, "BAD_CATEGORY", f"category must be one of {NEWS_CATEGORIES}"); continue
+        key = (row.get("instrument_key") or "").strip() or None
+        if key and key not in instruments:
+            rep.add(lineno, REVIEW, "UNKNOWN_INSTRUMENT_REF", f"{key!r} is not in the instrument list; stored without a link")
+            key = None
+        if now is not None and ts > now + dt.timedelta(minutes=5):
+            rep.add(lineno, REVIEW, "FUTURE_DATED", f"{raw_ts} is after the retrieval time")
+        utc = ts.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        nid = hashlib.sha1(repr((utc, headline, url)).encode()).hexdigest()[:16]
+        if nid in seen:
+            rep.add(lineno, REJECT, "DUPLICATE_RECORD", "same time, headline and link already in this file"); continue
+        seen.add(nid)
+        rep.accepted.append(NewsItem(nid, utc, "", _clean(row.get("publisher"), 120), cat, key, headline,
+                                     _clean(row.get("summary"), 1000), url))
+    return rep
+
+
+def import_holdings(text: str, instruments: Mapping[str, Instrument]) -> ImportReport:
+    """holdings_*.csv: instrument_key, as_of, isin, name, weight_pct (percent, 0-100). ETFs only. Each (ETF, as_of) set
+    should sum to about 100%; a set that does not is imported but flagged HOLDINGS_WEIGHT_SUM (the metric refuses it)."""
+    from .models import Holding
+    rep, rd = _read(text, ["instrument_key", "as_of", "isin", "name", "weight_pct"], "holdings")
+    seen: Dict[tuple, Decimal] = {}
+    sets: Dict[tuple, List[int]] = {}
+    totals: Dict[tuple, Decimal] = {}
+    pending = []
+    for lineno, row in enumerate(rd, start=2):
+        rep.rows_read += 1
+        rep.raw[lineno] = dict(row)
+        key = (row.get("instrument_key") or "").strip()
+        inst = instruments.get(key)
+        if inst is None:
+            rep.add(lineno, REJECT, "UNKNOWN_INSTRUMENT", f"{key!r} is not in the instrument list"); continue
+        if inst.type is not InstrumentType.ETF:
+            rep.add(lineno, REJECT, "HOLDINGS_ONLY_FOR_ETF", f"{key} is a {inst.type.value}"); continue
+        try:
+            d = _date(row["as_of"]); w = _dec(row["weight_pct"])
+        except ValueError as e:
+            rep.add(lineno, REJECT, "BAD_VALUE", str(e)); continue
+        isin = (row.get("isin") or "").strip().upper()
+        if w is None or w < 0 or w > 100:
+            rep.add(lineno, REJECT, "BAD_WEIGHT", "weight_pct must be between 0 and 100 (blank is not zero)"); continue
+        if not isin or not (row.get("name") or "").strip():
+            rep.add(lineno, REJECT, "MISSING_IDENTITY", "isin and name are required"); continue
+        k = (key, d, isin)
+        if k in seen:
+            rep.add(lineno, REJECT, "DUPLICATE_RECORD" if seen[k] == w else "CONFLICTING_DUPLICATE", f"{key} {d} {isin}"); continue
+        seen[k] = w
+        sets.setdefault((key, d), []).append(lineno)
+        totals[(key, d)] = totals.get((key, d), Decimal(0)) + w
+        pending.append(Holding(key, d, isin, _clean(row["name"], 200), w / 100, (row.get("source_id") or "").strip()))
+    for (key, d), total in totals.items():
+        if not (Decimal("98") <= total <= Decimal("100.5")):
+            for ln in sets[(key, d)]:
+                rep.add(ln, REVIEW, "HOLDINGS_WEIGHT_SUM", f"{key} {d}: weights sum to {total}%, expected about 100%")
+    rep.accepted = pending
+    return rep

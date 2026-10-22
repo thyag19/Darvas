@@ -7,6 +7,7 @@ import enum
 from dataclasses import dataclass
 from typing import Optional
 
+from .market_calendar import IST
 from .sources import SourceSpec
 
 
@@ -26,6 +27,8 @@ class SourceStatus:
     last_success_at: Optional[str]
     observed_through: Optional[str]
     consecutive_failures: int
+    next_attempt_at: Optional[str] = None
+    schedule: str = "local"
 
 
 def parse_utc(ts: str) -> dt.datetime:
@@ -38,12 +41,27 @@ def utc_iso(t: dt.datetime) -> str:
     return t.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def classify(spec: SourceSpec, last_success_at: Optional[str], now: dt.datetime) -> Freshness:
+def reference_time(spec: SourceSpec, cal, now: dt.datetime) -> dt.datetime:
+    """The moment a good retrieval should at least have covered. Market-hours sources are judged against the last close
+    when the market is shut (a Friday-close retrieval is fresh all weekend); daily sources against the latest daily slot."""
+    refs = []
+    if spec.schedule in ("market_hours", "market_and_daily") and cal is not None:
+        refs.append(now if cal.is_open(now) else (cal.last_close(now) or now))
+    if spec.schedule in ("daily", "market_and_daily"):
+        from .scheduler import daily_slot
+        n = now.astimezone(IST)
+        slot = daily_slot(spec, n.date())
+        refs.append(slot if slot <= now else daily_slot(spec, n.date() - dt.timedelta(days=1)))
+    return max(refs) if refs else now
+
+
+def classify(spec: SourceSpec, last_success_at: Optional[str], now: dt.datetime, cal=None) -> Freshness:
     if not spec.may_fetch:
         return Freshness.NOT_FETCHED
     if last_success_at is None:
         return Freshness.NEVER
-    return Freshness.FRESH if (now - parse_utc(last_success_at)).total_seconds() <= spec.max_staleness_s else Freshness.STALE
+    ref = reference_time(spec, cal, now)
+    return Freshness.FRESH if (ref - parse_utc(last_success_at)).total_seconds() <= spec.max_staleness_s else Freshness.STALE
 
 
 def is_due(spec: SourceSpec, last_attempt_at: Optional[str], now: dt.datetime, slack_s: int = 120) -> bool:

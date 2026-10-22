@@ -169,7 +169,9 @@ CREATE TABLE retrieval_log (          -- one row per source per attempt, INCLUDI
     started_at       TEXT NOT NULL,   -- UTC ISO-8601 retrieval time
     finished_at      TEXT NOT NULL,
     status           TEXT NOT NULL CHECK (status IN ('OK','NO_NEW_DATA','SKIPPED_NOT_CLEARED','SKIPPED_DISABLED',
-                                                     'SKIPPED_NOT_DUE','ERROR')),
+                                                     'SKIPPED_NOT_DUE','SKIPPED_OUTSIDE_SESSION','ERROR')),
+    window_class     TEXT NOT NULL DEFAULT 'local' CHECK (window_class IN ('market','daily','local')),
+    note             TEXT NOT NULL DEFAULT '',   -- schedule reason, e.g. HOLIDAY: Dussehra
     attempts         INTEGER NOT NULL DEFAULT 0,
     documents        INTEGER NOT NULL DEFAULT 0,
     rows_accepted    INTEGER NOT NULL DEFAULT 0,
@@ -193,3 +195,18 @@ CREATE TABLE discrepancy (            -- cross-source disagreement; both observa
     resolution_note TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (instrument_key, field, ref_date, source_a, source_b)
 );
+
+CREATE TABLE news_item (              -- announcements/news headlines; display needs the source to be display_cleared
+    news_id         TEXT PRIMARY KEY,           -- content hash
+    published_at    TEXT NOT NULL,              -- UTC ISO-8601, when the item was published (observation time)
+    retrieved_at    TEXT,                       -- UTC ISO-8601, when we fetched it
+    source_id       TEXT NOT NULL REFERENCES source(source_id),
+    publisher       TEXT NOT NULL DEFAULT '',   -- original publisher / filing type as stated by the source
+    category        TEXT NOT NULL CHECK (category IN ('REIT','INVIT','INFRASTRUCTURE','CORPORATE','OTHER')),
+    instrument_key  TEXT REFERENCES instrument(instrument_key),
+    headline        TEXT NOT NULL,
+    summary         TEXT NOT NULL DEFAULT '',
+    url             TEXT NOT NULL DEFAULT '' CHECK (url = '' OR url LIKE 'http://%' OR url LIKE 'https://%'),
+    document_id     TEXT REFERENCES source_document(document_id)
+);
+CREATE INDEX ix_news_published ON news_item (published_at);

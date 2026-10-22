@@ -165,10 +165,32 @@ def load_event_rows(conn, key: str):
 
 
 def save_retrieval(conn, retrieval_id, source_id, started_at, finished_at, status, attempts=0, documents=0,
-                   accepted=0, rejected=0, observed_through=None, error=None) -> None:
-    conn.execute("INSERT INTO retrieval_log VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                 (retrieval_id, source_id, started_at, finished_at, status, attempts, documents, accepted, rejected,
-                  observed_through.isoformat() if observed_through else None, error))
+                   accepted=0, rejected=0, observed_through=None, error=None, window_class="local", note="") -> None:
+    conn.execute("INSERT INTO retrieval_log (retrieval_id,source_id,started_at,finished_at,status,window_class,note,attempts,"
+                 "documents,rows_accepted,rows_rejected,observed_through,error) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                 (retrieval_id, source_id, started_at, finished_at, status, window_class, note, attempts, documents,
+                  accepted, rejected, observed_through.isoformat() if observed_through else None, error))
+
+
+REAL = "('OK','NO_NEW_DATA','ERROR')"
+
+
+def last_real_attempts(conn, source_id) -> dict:
+    """{'market'|'daily'|'local': started_at of the last real (not skipped) attempt}; skips never reset the cadence."""
+    return {w: t for w, t in conn.execute(
+        f"SELECT window_class, MAX(started_at) FROM retrieval_log WHERE source_id=? AND status IN {REAL} GROUP BY window_class",
+        (source_id,)) if t}
+
+
+def skip_recently_logged(conn, source_id, status, note, started_at: str, within_s: int = 3600) -> bool:
+    """True if the most recent log row for this source has the same skip status and note less than within_s ago."""
+    import datetime as _dt
+    r = conn.execute("SELECT status, note, started_at FROM retrieval_log WHERE source_id=? ORDER BY started_at DESC, rowid DESC LIMIT 1",
+                     (source_id,)).fetchone()
+    if not r or r[0] != status or r[1] != note:
+        return False
+    t = lambda x: _dt.datetime.fromisoformat(x.replace("Z", "+00:00"))
+    return (t(started_at) - t(r[2])).total_seconds() < within_s
 
 
 def last_attempt(conn, source_id):
@@ -232,3 +254,34 @@ def save_document(conn, document_id, source_id, url, retrieved_at, sha256, note=
 
 def mark_document_retry(conn, source_id, sha256) -> None:
     conn.execute("UPDATE source_document SET note='RETRY' WHERE source_id=? AND sha256=?", (source_id, sha256))
+
+
+def save_news(conn, items, retrieved_at: str = None, document_id: str = None) -> int:
+    n0 = conn.total_changes
+    conn.executemany("INSERT OR IGNORE INTO news_item (news_id,published_at,retrieved_at,source_id,publisher,category,instrument_key,"
+                     "headline,summary,url,document_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                     [(n.news_id, n.published_at, retrieved_at, n.source_id, n.publisher, n.category, n.instrument_key,
+                       n.headline, n.summary, n.url, document_id) for n in items])
+    return conn.total_changes - n0
+
+
+def load_news(conn, limit: int = 200):
+    """[(NewsItem, retrieved_at)] newest first."""
+    from .models import NewsItem
+    return [(NewsItem(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8]), r[9]) for r in conn.execute(
+        "SELECT news_id,published_at,source_id,publisher,category,instrument_key,headline,summary,url,retrieved_at "
+        "FROM news_item ORDER BY published_at DESC, news_id LIMIT ?", (limit,))]
+
+
+def save_holdings(conn, holdings, retrieved_at: str = None) -> int:
+    n0 = conn.total_changes
+    conn.executemany("INSERT OR IGNORE INTO holding (etf_key,as_of_date,isin,name,weight,source_id) VALUES (?,?,?,?,?,?)",
+                     [(h.etf_key, h.as_of.isoformat(), h.isin, h.name, str(h.weight), h.source_id or None) for h in holdings])
+    return conn.total_changes - n0
+
+
+def load_holdings(conn, etf_key: str):
+    from .models import Holding
+    rows = conn.execute("SELECT as_of_date,isin,name,weight,source_id FROM holding WHERE etf_key=? ORDER BY as_of_date, weight DESC",
+                        (etf_key,)).fetchall()
+    return [Holding(etf_key, dt.date.fromisoformat(d), i, n, _d(w), s or "") for d, i, n, w, s in rows]

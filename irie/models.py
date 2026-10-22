@@ -158,3 +158,16 @@ class Holding:
     name: str
     weight: Decimal
     source_id: str = ""
+
+
+@dataclass(frozen=True)
+class NewsItem:
+    news_id: str
+    published_at: str              # UTC ISO-8601 (observation time)
+    source_id: str
+    publisher: str
+    category: str                  # REIT | INVIT | INFRASTRUCTURE | CORPORATE | OTHER
+    instrument_key: Optional[str]
+    headline: str
+    summary: str = ""
+    url: str = ""

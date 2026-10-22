@@ -21,12 +21,14 @@ from typing import Callable, Dict, List, Mapping, Optional, Protocol, Sequence
 from . import discrepancy as dsc
 from . import freshness as fr
 from . import importing as imp
+from . import scheduler as sched
 from . import storage as st
 from .interfaces import RawDocument
 from .models import Instrument, SourceGrade
+from .market_calendar import MarketCalendar
 from .sources import SourceSpec
 
-KINDS = ("instruments", "distributions", "prices", "navs", "leverage")
+KINDS = ("instruments", "distributions", "prices", "navs", "leverage", "holdings", "news")
 
 
 class FetchError(Exception):
@@ -38,7 +40,7 @@ class PermanentFetchError(Exception):
 
 
 class Fetcher(Protocol):
-    def fetch(self, spec: SourceSpec, as_of: dt.date) -> Sequence[RawDocument]: ...
+    def fetch(self, spec: SourceSpec, as_of: dt.date, kinds: Optional[frozenset] = None) -> Sequence[RawDocument]: ...
 
 
 class RateLimiter:
@@ -78,10 +80,12 @@ class FileInboxFetcher:
     def __init__(self, root, clock: Callable[[], dt.datetime]):
         self.root, self.clock = Path(root), clock
 
-    def fetch(self, spec: SourceSpec, as_of: dt.date) -> Sequence[RawDocument]:
+    def fetch(self, spec: SourceSpec, as_of: dt.date, kinds: Optional[frozenset] = None) -> Sequence[RawDocument]:
         d = self.root / spec.source_id
         docs = []
         for p in sorted(d.glob("*.csv")) if d.is_dir() else []:
+            if kinds is not None and _kind_of(p.name) not in kinds:
+                continue
             b = p.read_bytes()
             docs.append(RawDocument(spec.source_id, p.name, self.clock(), hashlib.sha256(b).hexdigest(), b))
         return docs
@@ -97,6 +101,9 @@ class SourceOutcome:
     rejected: int = 0
     review: int = 0
     duplicates: int = 0
+    deferred: int = 0
+    reason: str = ""
+    window_class: str = "local"
     observed_through: Optional[dt.date] = None
     error: Optional[str] = None
 
@@ -129,9 +136,12 @@ def _with_source(items, spec: SourceSpec):
 
 
 def _ingest_document(conn, spec: SourceSpec, doc: RawDocument, instruments: Dict[str, Instrument], as_of: dt.date,
-                     retrieved_at: str, out: SourceOutcome) -> None:
+                     retrieved_at: str, out: SourceOutcome, allowed: Optional[frozenset] = None) -> None:
     if hashlib.sha256(doc.content).hexdigest() != doc.sha256:
         raise PermanentFetchError(f"{doc.url}: content does not match its sha256")
+    if allowed is not None and _kind_of(doc.url) is not None and _kind_of(doc.url) not in allowed:
+        out.deferred += 1                    # not permitted in this window (e.g. prices outside a session): left for later
+        return
     did = f"{spec.source_id}:{doc.sha256[:16]}"
     if not st.save_document(conn, did, spec.source_id, doc.url, retrieved_at, doc.sha256):
         out.duplicates += 1                  # already ingested: re-reading changes nothing
@@ -165,9 +175,15 @@ def _ingest_document(conn, spec: SourceSpec, doc: RawDocument, instruments: Dict
             rep = imp.import_navs(text, instruments, as_of=as_of)
             st.save_navs(conn, _with_source(rep.accepted, spec), retrieved_at, did)
             out.observed_through = max([n.nav_date for n in rep.accepted], default=None)
-        else:
+        elif kind == "leverage":
             rep = imp.import_leverage(text, instruments, as_of=as_of)
             st.save_leverage(conn, _with_source(rep.accepted, spec), retrieved_at)
+        elif kind == "holdings":
+            rep = imp.import_holdings(text, instruments)
+            st.save_holdings(conn, _with_source(rep.accepted, spec), retrieved_at)
+        else:
+            rep = imp.import_news(text, instruments, now=fr.parse_utc(retrieved_at))
+            st.save_news(conn, _with_source(rep.accepted, spec), retrieved_at, did)
     except ValueError as e:                  # e.g. missing required column: the whole document is rejected
         out.rejected += 1
         out.error = (out.error or "") + f" {doc.url}: {e};"
@@ -210,11 +226,13 @@ def _grade(conn, source_id: str) -> SourceGrade:
 
 
 def run_cycle(conn: sqlite3.Connection, registry: Mapping[str, SourceSpec], fetchers: Mapping[str, Fetcher],
-              now: Callable[[], dt.datetime], *, force: bool = False, sleep: Callable[[float], None] = time.sleep,
-              limiters: Optional[Dict[str, RateLimiter]] = None, rng: Callable[[], float] = random.random,
-              base_delay: float = 1.0) -> CycleReport:
-    """One refresh pass over every registered source. Safe to run every hour (or more often: not-due sources are
-    logged SKIPPED_NOT_DUE unless force=True)."""
+              now: Callable[[], dt.datetime], *, calendar: Optional[MarketCalendar] = None, force: bool = False,
+              sleep: Callable[[float], None] = time.sleep, limiters: Optional[Dict[str, RateLimiter]] = None,
+              rng: Callable[[], float] = random.random, base_delay: float = 1.0) -> CycleReport:
+    """One scheduling pass over every registered source. Call it as often as you like (every 15 minutes is typical):
+    scheduler.decide() says whether each source may be attempted now. Market-hours sources are attempted hourly during
+    NSE/BSE sessions only; daily sources once per IST day off-hours; skipped sources are logged (at most hourly per
+    reason), so staleness stays auditable. force=True overrides cadence only, never permission or session rules."""
     t0 = now()
     as_of = fr.ist_date(t0)
     st.sync_sources(conn, [s.to_source() for s in registry.values()])
@@ -224,46 +242,59 @@ def run_cycle(conn: sqlite3.Connection, registry: Mapping[str, SourceSpec], fetc
     for sid, spec in registry.items():
         started = now()
         out = SourceOutcome(sid, "OK")
-        last = st.last_attempt(conn, sid)
+        last = st.last_real_attempts(conn, sid)
+        dec = None
         if not spec.enabled:
             out.status = "SKIPPED_DISABLED"
         elif not spec.may_fetch:
             out.status = "SKIPPED_NOT_CLEARED"
-        elif not force and not fr.is_due(spec, last[0] if last else None, started):
-            out.status = "SKIPPED_NOT_DUE"
-        elif sid not in fetchers:
-            out.status, out.error = "ERROR", "no fetcher registered for a fetchable source"
         else:
-            lim = limiters.setdefault(sid, RateLimiter(spec.min_interval_s, sleep=sleep))
-            try:
-                def attempt():
-                    lim.wait()
-                    return fetchers[sid].fetch(spec, as_of)
-                docs, out.attempts = with_retries(attempt, spec.max_attempts, base_delay, sleep=sleep, rng=rng)
-                docs = sorted(docs, key=lambda d: (KINDS.index(_kind_of(d.url)) if _kind_of(d.url) else len(KINDS), d.url))
-                retrieved_at = fr.utc_iso(now())
-                for doc in docs:
-                    _ingest_document(conn, spec, doc, instruments, as_of, retrieved_at, out)
-                out.status = "OK" if out.documents else "NO_NEW_DATA"
-            except (FetchError, PermanentFetchError) as e:
-                out.status, out.error = "ERROR", f"{type(e).__name__}: {e}"
+            dec = sched.decide(spec, calendar, started, {} if (force and spec.schedule == "local") else last)
+            out.window_class, out.reason = dec.window_class, dec.reason + (f": {dec.note}" if dec.note else "")
+            if not dec.due and force and dec.reason == "NOT_DUE":
+                dec = sched.Decision(True, "FORCED", dec.kinds if dec.kinds is not None else None, dec.window_class)
+            if not dec.due:
+                out.status = "SKIPPED_OUTSIDE_SESSION" if dec.reason in ("OUTSIDE_SESSION", "CALENDAR_NOT_LOADED") else "SKIPPED_NOT_DUE"
+        if out.status == "OK" and dec is not None and dec.due:
+            if sid not in fetchers:
+                out.status, out.error = "ERROR", "no fetcher registered for a fetchable source"
+            else:
+                lim = limiters.setdefault(sid, RateLimiter(spec.min_interval_s, sleep=sleep))
+                try:
+                    def attempt():
+                        lim.wait()
+                        return fetchers[sid].fetch(spec, as_of, dec.kinds)
+                    docs, out.attempts = with_retries(attempt, spec.max_attempts, base_delay, sleep=sleep, rng=rng)
+                    docs = sorted(docs, key=lambda d: (KINDS.index(_kind_of(d.url)) if _kind_of(d.url) else len(KINDS), d.url))
+                    retrieved_at = fr.utc_iso(now())
+                    for doc in docs:
+                        _ingest_document(conn, spec, doc, instruments, as_of, retrieved_at, out, dec.kinds)
+                    out.status = "OK" if out.documents else "NO_NEW_DATA"
+                except (FetchError, PermanentFetchError) as e:
+                    out.status, out.error = "ERROR", f"{type(e).__name__}: {e}"
         fin = now()
-        n_log = conn.execute("SELECT COUNT(*) FROM retrieval_log").fetchone()[0]
-        st.save_retrieval(conn, f"{sid}:{fr.utc_iso(started)}:{n_log}", sid, fr.utc_iso(started), fr.utc_iso(fin),
-                          out.status, out.attempts, out.documents, out.accepted, out.rejected, out.observed_through, out.error)
+        skipped = out.status.startswith("SKIPPED")
+        if not (skipped and st.skip_recently_logged(conn, sid, out.status, out.reason, fr.utc_iso(started))):
+            n_log = conn.execute("SELECT COUNT(*) FROM retrieval_log").fetchone()[0]
+            st.save_retrieval(conn, f"{sid}:{fr.utc_iso(started)}:{n_log}", sid, fr.utc_iso(started), fr.utc_iso(fin),
+                              out.status, out.attempts, out.documents, out.accepted, out.rejected, out.observed_through,
+                              out.error, out.window_class, out.reason)
         conn.commit()
         report.outcomes.append(out)
-    report.discrepancies_new = len([d for d in detect_discrepancies(conn, now())])
+    report.discrepancies_new = len(detect_discrepancies(conn, now()))
     conn.commit()
     report.finished_at = fr.utc_iso(now())
     return report
 
 
-def source_statuses(conn, registry: Mapping[str, SourceSpec], now: dt.datetime) -> List[fr.SourceStatus]:
+def source_statuses(conn, registry: Mapping[str, SourceSpec], now: dt.datetime,
+                    calendar: Optional[MarketCalendar] = None) -> List[fr.SourceStatus]:
     rows = []
     for sid, spec in registry.items():
         la, ls = st.last_attempt(conn, sid), st.last_success(conn, sid)
-        rows.append(fr.SourceStatus(sid, fr.classify(spec, ls[0] if ls else None, now), la[0] if la else None,
-                                    la[1] if la else None, ls[0] if ls else None, ls[1] if ls else None,
-                                    st.consecutive_failures(conn, sid)))
+        nxt = sched.next_attempt(spec, calendar, now, st.last_real_attempts(conn, sid)) if spec.may_fetch else None
+        rows.append(fr.SourceStatus(sid, fr.classify(spec, ls[0] if ls else None, now, calendar),
+                                    la[0] if la else None, la[1] if la else None, ls[0] if ls else None,
+                                    ls[1] if ls else None, st.consecutive_failures(conn, sid),
+                                    fr.utc_iso(nxt) if nxt else None, spec.schedule))
     return rows

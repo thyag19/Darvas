@@ -135,3 +135,28 @@ def trailing_distribution_yield(instrument: Instrument, events: Sequence[Distrib
     if w.n_unavailable:
         flags.append("AMOUNT_UNAVAILABLE_IN_WINDOW")
     return ok(name, as_of, w.total / px, "ratio", flags, w.source_ids, [("ttm_total", str(w.total)), ("price", str(px))])
+
+
+HOLDINGS_STALE_DAYS = 45      # assumption: monthly portfolio disclosure plus publication lag; configurable
+
+
+def holdings_top10_weight(instrument: Instrument, holdings: Sequence, as_of: dt.date, *,
+                          stale_days: int = HOLDINGS_STALE_DAYS) -> MetricResult:
+    """Sum of the ten largest holding weights in the latest disclosed portfolio (top-N if fewer than ten names).
+    The portfolio must sum to 98-100.5%: a partial list would make the figure meaningless, so it is refused. Needs the
+    holdings as-of date; older than stale_days is flagged HOLDINGS_STALE (blocking)."""
+    name = "holdings_top10_weight"
+    mine = [h for h in holdings if h.etf_key == instrument.key and h.as_of <= as_of]
+    if not mine:
+        return withheld(name, as_of, Status.UNAVAILABLE, ["HOLDINGS_NOT_SUPPLIED"], "ratio")
+    latest = max(h.as_of for h in mine)
+    cur = [h for h in mine if h.as_of == latest]
+    total = sum((h.weight for h in cur), Decimal(0))
+    if not (Decimal("0.98") <= total <= Decimal("1.005")):
+        return withheld(name, as_of, Status.UNAVAILABLE, [f"HOLDINGS_INCOMPLETE (weights sum to {total:.4f})"], "ratio")
+    top = sorted((h.weight for h in cur), reverse=True)[:10]
+    flags = ["HOLDINGS_STALE"] if (as_of - latest).days > stale_days else []
+    if len(cur) < 10:
+        flags.append("FEWER_THAN_10_HOLDINGS")
+    return ok(name, as_of, sum(top, Decimal(0)), "ratio", flags, {h.source_id for h in cur if h.source_id},
+              [("as_of_holdings", latest.isoformat()), ("names", str(len(cur)))])

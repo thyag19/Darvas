@@ -1,21 +1,92 @@
 {
-  "_comment": "Source registry. 'access' is a recorded permission decision. Nothing marked NOT_CLEARED is ever fetched. No source here is CLEARED and no source is display_cleared: that needs written permission, recorded in clearance_evidence/display_evidence. Terms URLs come from PHASE2_FEASIBILITY_REPORT.md (reported terms, not read in full).",
+  "_comment": "Source registry. 'access' is a recorded permission decision. Nothing marked NOT_CLEARED is ever fetched. No source here is CLEARED and no source is display_cleared: that needs written permission, recorded in clearance_evidence/display_evidence. Terms URLs come from PHASE2_FEASIBILITY_REPORT.md (reported terms, not read in full). Schedules: market_hours = hourly in NSE/BSE sessions only; daily = once per IST day at daily_time (off-hours); local = local files only.",
   "sources": [
-    {"source_id": "INBOX", "name": "Operator-supplied files (inbox/INBOX/*.csv)", "grade": "UNKNOWN", "kind": "file_inbox",
-     "access": "USER_SUPPLIED", "provides": ["instruments", "distributions", "prices", "navs", "leverage"],
-     "cadence_s": 3600, "min_interval_s": 0, "max_staleness_s": 7200,
-     "notes": "Rows carry their own amount_grade. Not cleared for public display until the operator records display_evidence."},
-    {"source_id": "NSE", "name": "NSE website, quote/corporate-action endpoints, archives", "grade": "EXCHANGE", "kind": "http",
-     "access": "NOT_CLEARED", "provides": ["prices", "distributions"], "terms_url": "https://www.nseindia.com/nse-terms-of-use",
-     "notes": "Reported terms require written permission to copy/store/redistribute and bar automated collection. No fetcher is implemented."},
-    {"source_id": "BSE", "name": "BSE website and APIs", "grade": "EXCHANGE", "kind": "http",
-     "access": "NOT_CLEARED", "provides": ["prices", "distributions"], "terms_url": "https://bseindia.com/static/fpi/Disclaimer.aspx",
-     "notes": "Reported disclaimer bars reproduction/redistribution. No fetcher is implemented."},
-    {"source_id": "AMFI", "name": "AMFI daily NAV file", "grade": "REGULATOR", "kind": "http",
-     "access": "NOT_CLEARED", "provides": ["navs"], "terms_url": "https://www.amfiindia.com/terms-of-use",
-     "notes": "Reported terms: personal, non-commercial use; written agreement needed otherwise. No fetcher is implemented."},
-    {"source_id": "ISSUER", "name": "Issuer / AMC filings and disclosures", "grade": "ISSUER", "kind": "http",
-     "access": "NOT_CLEARED", "provides": ["distributions", "navs", "leverage"],
-     "notes": "Per-issuer permissions not established. Disclosed figures may be keyed in via the inbox with their source noted."}
+    {
+      "source_id": "INBOX",
+      "name": "Operator-supplied files (inbox/INBOX/*.csv)",
+      "grade": "UNKNOWN",
+      "kind": "file_inbox",
+      "access": "USER_SUPPLIED",
+      "provides": [
+        "instruments",
+        "distributions",
+        "prices",
+        "navs",
+        "leverage",
+        "news",
+        "holdings"
+      ],
+      "cadence_s": 3600,
+      "min_interval_s": 0,
+      "max_staleness_s": 7200,
+      "notes": "Rows carry their own amount_grade. Not cleared for public display until the operator records display_evidence.",
+      "schedule": "local"
+    },
+    {
+      "source_id": "NSE",
+      "name": "NSE website, quote/corporate-action endpoints, archives",
+      "grade": "EXCHANGE",
+      "kind": "http",
+      "access": "NOT_CLEARED",
+      "provides": [
+        "prices",
+        "distributions",
+        "news"
+      ],
+      "terms_url": "https://www.nseindia.com/nse-terms-of-use",
+      "notes": "Reported terms require written permission to copy/store/redistribute and bar automated collection. No fetcher is implemented.",
+      "schedule": "market_and_daily",
+      "max_staleness_s": 7200,
+      "daily_time": "19:00"
+    },
+    {
+      "source_id": "BSE",
+      "name": "BSE website and APIs",
+      "grade": "EXCHANGE",
+      "kind": "http",
+      "access": "NOT_CLEARED",
+      "provides": [
+        "prices",
+        "distributions",
+        "news"
+      ],
+      "terms_url": "https://bseindia.com/static/fpi/Disclaimer.aspx",
+      "notes": "Reported disclaimer bars reproduction/redistribution. No fetcher is implemented.",
+      "schedule": "market_and_daily",
+      "max_staleness_s": 7200,
+      "daily_time": "19:00"
+    },
+    {
+      "source_id": "AMFI",
+      "name": "AMFI daily NAV file",
+      "grade": "REGULATOR",
+      "kind": "http",
+      "access": "NOT_CLEARED",
+      "provides": [
+        "navs"
+      ],
+      "terms_url": "https://www.amfiindia.com/terms-of-use",
+      "notes": "Reported terms: personal, non-commercial use; written agreement needed otherwise. No fetcher is implemented.",
+      "schedule": "daily",
+      "max_staleness_s": 93600,
+      "daily_time": "21:30"
+    },
+    {
+      "source_id": "ISSUER",
+      "name": "Issuer / AMC filings and disclosures",
+      "grade": "ISSUER",
+      "kind": "http",
+      "access": "NOT_CLEARED",
+      "provides": [
+        "distributions",
+        "navs",
+        "leverage",
+        "news",
+        "holdings"
+      ],
+      "notes": "Per-issuer permissions not established. Disclosed figures may be keyed in via the inbox with their source noted.",
+      "schedule": "daily",
+      "max_staleness_s": 93600
+    }
   ]
 }

@@ -20,7 +20,7 @@ class Status(str, enum.Enum):
 # Flags that stop a figure being treated as publishable. Other flags are caveats shown to the reader.
 BLOCKING_FLAGS = frozenset({
     "UNVERIFIED_SOURCE", "PRICE_STALE", "AMOUNT_UNAVAILABLE_IN_WINDOW", "COMPONENTS_DO_NOT_RECONCILE",
-    "NAV_UNVERIFIED", "NAV_STALE", "LEVERAGE_UNVERIFIED", "SOURCE_DISCREPANCY",
+    "NAV_UNVERIFIED", "NAV_STALE", "LEVERAGE_UNVERIFIED", "SOURCE_DISCREPANCY", "HOLDINGS_STALE",
 })
 
 

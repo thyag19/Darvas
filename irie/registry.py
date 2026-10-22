@@ -32,6 +32,7 @@ class Snapshot:
     net_debt: Optional[Decimal] = None               # REIT inputs for net_debt_to_gav
     gav: Optional[Decimal] = None
     benchmark: Sequence[tuple] = ()                  # ETF benchmark levels [(date, level)], licence not cleared
+    holdings: Sequence = ()                          # ETF disclosed portfolio rows (irie.models.Holding)
     manual_partial_history: bool = False
 
 
@@ -69,6 +70,9 @@ SPECS: Dict[str, MetricSpec] = {s.name: s for s in [
     MetricSpec("premium_discount_to_nav", _ETF, None, ("price", "nav"), "price / NAV - 1 on the same date"),
     MetricSpec("nav_return_1y", _ETF, None, ("navs",), "NAV(as_of)/NAV(as_of-365d)-1; excludes distributions"),
     MetricSpec("trailing_distribution_yield", _ETF, None, ("events", "price"), "TTM distributions / price; only for schemes known to distribute; no component split"),
+    MetricSpec("holdings_top10_weight", _ETF, frozenset({ETFCategory.EQUITY_BROAD, ETFCategory.EQUITY_SECTOR_THEMATIC_FACTOR,
+                                                         ETFCategory.DEBT, ETFCategory.INTERNATIONAL}), ("holdings",),
+               "Sum of the ten largest weights of the latest disclosed portfolio; refused unless weights sum to ~100%"),
     MetricSpec("tracking_difference_1y", _ETF, _EQ_LIKE, ("navs", "benchmark"), "1y fund NAV return - benchmark return; not tracking error"),
 ]}
 
@@ -112,6 +116,8 @@ def compute_all(snap: Snapshot, price_stale_days: int = 3) -> Dict[str, MetricRe
             out[name] = etfcalc.nav_return(inst, snap.navs, as_of - year, as_of, as_of, name=name)
         elif name == "trailing_distribution_yield":
             out[name] = etfcalc.trailing_distribution_yield(inst, snap.events, snap.price, as_of)
+        elif name == "holdings_top10_weight":
+            out[name] = etfcalc.holdings_top10_weight(inst, snap.holdings, as_of)
         elif name == "tracking_difference_1y":
             res = etfcalc.tracking_difference(inst, snap.navs, snap.benchmark, as_of - year, as_of, as_of)
             out[name] = res
