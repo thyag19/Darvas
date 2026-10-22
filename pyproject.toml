@@ -1,0 +1,16 @@
+[project]
+name = "irie"
+version = "0.1.0"
+description = "Data model and calculation engine for Indian REITs, InvITs and ETFs (M1)"
+requires-python = ">=3.11"
+dependencies = []          # standard library only
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "openpyxl>=3.1"]   # openpyxl is needed only by tools/extract_workbook_fixtures.py
+
+[tool.setuptools]
+packages = ["irie", "irie.calc"]
+package-data = { irie = ["schema.sql"] }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
