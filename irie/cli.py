@@ -31,13 +31,15 @@ def main(argv=None) -> int:
     r = sub.add_parser("run-cycle", help="refresh every registered source once (or hourly with --loop)")
     r.add_argument("--db", required=True)
     r.add_argument("--registry", default="config/sources.json")
+    r.add_argument("--calendar", default="config/market_calendar.json")
     r.add_argument("--inbox", default="inbox")
     r.add_argument("--force", action="store_true")
     r.add_argument("--loop", action="store_true", help="repeat forever, sleeping --interval seconds between cycles")
-    r.add_argument("--interval", type=int, default=3600)
+    r.add_argument("--interval", type=int, default=900, help="seconds between scheduling passes; the scheduler decides what is due")
     b = sub.add_parser("build-site", help="write the static dashboard from the database")
     b.add_argument("--db", required=True)
     b.add_argument("--registry", default="config/sources.json")
+    b.add_argument("--calendar", default="config/market_calendar.json")
     b.add_argument("--out", required=True)
     b.add_argument("--mode", choices=["public", "preview"], default="public")
     d = sub.add_parser("build-demo", help="build the dashboard from SYNTHETIC data (never real market data)")
@@ -69,7 +71,9 @@ def _operate(a) -> int:
     import time
     from . import demo, export, ingest, site
     from . import storage as st
+    from .market_calendar import load_calendar
     from .sources import load_registry
+    cal_path = Path(getattr(a, 'calendar', None) or Path(__file__).resolve().parent.parent / 'config' / 'market_calendar.json')
 
     utcnow = lambda: dt.datetime.now(dt.timezone.utc)
     if a.cmd == "build-demo":
@@ -79,23 +83,27 @@ def _operate(a) -> int:
             st.init_schema(conn)
             reg = demo.demo_registry()
             fetchers = {k: ingest.FileInboxFetcher(tmp, lambda: demo.DEMO_NOW) for k in reg}
-            rep = ingest.run_cycle(conn, reg, fetchers, lambda: demo.DEMO_NOW)
-            ds = export.build_dataset(conn, reg, demo.DEMO_NOW, "public")
-            ds["notice"] = "SYNTHETIC DEMO DATA: invented by irie.demo. Not real market data."
+            cal = load_calendar(cal_path)
+            rep = ingest.run_cycle(conn, reg, fetchers, lambda: demo.DEMO_NOW, calendar=cal)
+            ds = export.build_dataset(conn, reg, demo.DEMO_NOW, "public", cal)
             site.build_site(export.dumps(ds), a.out)
         print(f"demo site written to {a.out} ({len(ds['instruments'])} synthetic instruments)")
         return 0
     registry = load_registry(a.registry)
+    cal = load_calendar(cal_path)
+    for sp in registry.values():
+        from .scheduler import validate_schedule
+        validate_schedule(sp, cal)
     conn = st.connect(a.db)
     if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='source'").fetchone():
         st.init_schema(conn)
     if a.cmd == "build-site":
-        site.build_site(export.dumps(export.build_dataset(conn, registry, utcnow(), a.mode)), a.out)
+        site.build_site(export.dumps(export.build_dataset(conn, registry, utcnow(), a.mode, cal)), a.out)
         print(f"{a.mode} site written to {a.out}")
         return 0
     fetchers = {sid: ingest.FileInboxFetcher(a.inbox, utcnow) for sid, sp in registry.items() if sp.kind == "file_inbox"}
     while True:
-        rep = ingest.run_cycle(conn, registry, fetchers, utcnow, force=a.force)
+        rep = ingest.run_cycle(conn, registry, fetchers, utcnow, calendar=cal, force=a.force)
         print(json.dumps({"started_at": rep.started_at, "finished_at": rep.finished_at, "as_of": rep.as_of.isoformat(),
                           "discrepancies": rep.discrepancies_new,
                           "sources": {o.source_id: {"status": o.status, "documents": o.documents, "accepted": o.accepted,

@@ -11,19 +11,26 @@ python -m irie.cli build-demo --out /tmp/demo                                # S
 Every cycle logs one `retrieval_log` row per registered source, including skipped ones, so staleness is auditable. The cycle is
 idempotent (documents are deduplicated by SHA-256; observations are `INSERT OR IGNORE`). Exit code 1 if any source ended in ERROR.
 
-### Hourly, 24/7
-`--loop` attempts every `--interval` seconds (default 3600) and each source is attempted when `cadence_s` (default 3600) has elapsed
-(with 120 s slack). Per-source rate limiting (`min_interval_s`), up to `max_attempts` tries with exponential backoff and jitter,
-permanent errors (403/404/451, hash mismatch) are never retried, and one failing source never stops the others. Run it under an
-init system you control, for example (untested here):
+### Refresh schedule (corrected in M3: no 24/7 polling)
+`irie/scheduler.py` decides what is due; run a scheduling pass every 15 minutes (`run-cycle --loop`, default `--interval 900`, or cron / the
+workflow below) and it attempts sources only when permitted:
+- **Market data (prices): hourly during NSE/BSE trading sessions only**, `Asia/Kolkata`, from `config/market_calendar.json` (regular session
+  09:15-15:30, weekends, exchange holidays, exceptional sessions). The first attempt is at the open, then roughly hourly, last at about 15:15.
+  No price is requested outside a session. A year missing from the calendar **fails closed** (no market polling, logged `CALENDAR_NOT_LOADED`).
+- **Once-daily off-hours check** (`daily_time`, default 19:00 IST, must fall outside the session) for non-price kinds: instruments,
+  distributions, NAV, leverage, holdings, news. Weekends and holidays included, since announcements can appear then. Configurable per source.
+- **Local inbox** (`schedule: local`): reads files on disk hourly; no external server is contacted.
+- An attempt only fetches the data kinds its window allows (`prices` in-session, the rest in the daily check); a file of another kind is left for its own window.
+- Rate limits, retries with backoff, per-attempt audit rows, freshness and discrepancy handling are unchanged. Skips are logged at most hourly per reason and never reset the cadence; `--force` overrides cadence only, never permission or session rules.
+- **Calendar caveat:** the shipped 2026 holiday list is marked `verified: false` (broker pages, not the exchange circular). Compare it with the official NSE/BSE circular, add any exceptional session with its times, then set `verified: true`.
+Freshness is judged against the schedule: a Friday-close retrieval is fresh all weekend; a daily source is judged against the latest daily slot.
+Run under an init system you control, for example (untested here):
 ```
-# /etc/systemd/system/irie.service
 [Service] ExecStart=/usr/bin/python3 -m irie.cli run-cycle --loop --db /var/lib/irie/irie.sqlite --inbox /var/lib/irie/inbox
 Restart=always
 ```
-or `17 * * * * python -m irie.cli run-cycle ...` from cron. `.github/workflows/refresh.yml` is the same job on GitHub Actions, **inert until
-the repository variable `IRIE_REFRESH_ENABLED=true`**; it deploys nothing, keeps state only in a best-effort cache, and GitHub disables
-scheduled workflows after 60 idle days.
+`.github/workflows/refresh.yml` runs the same pass every 15 minutes on GitHub Actions, **inert until the repository variable
+`IRIE_REFRESH_ENABLED=true`**; it deploys nothing, state lives in a best-effort cache, and GitHub disables schedules after 60 idle days.
 
 ## 2. Source registry (`config/sources.json`)
 `access` is a recorded permission decision: `CLEARED` (needs `clearance_evidence` + `terms_checked_on`), `USER_SUPPLIED` (files you
@@ -41,6 +48,8 @@ Files are matched by prefix and processed in dependency order. A file that refer
 | `prices_*.csv` | instrument_key,date,price | venue,source_id |
 | `navs_*.csv` | instrument_key,nav_date,nav | kind(FAIR_VALUE/BOOK/FUND_NAV),grade,source_id |
 | `leverage_*.csv` | instrument_key,date,value,definition | grade,definition_note,source_id |
+| `holdings_*.csv` | instrument_key,as_of,isin,name,weight_pct (ETFs only; a portfolio should sum to ~100%) | source_id |
+| `news_*.csv` | published_at (ISO-8601 **with timezone**),headline | summary,url (http/https only),publisher,category(REIT/INVIT/INFRASTRUCTURE/CORPORATE/OTHER),instrument_key |
 Rows naming a source id we do not know are attributed to the file's provider and the original id is kept in `notes`.
 Validation and the rejected/ambiguous report are as in M1 (`docs/M1_TECHNICAL.md`, section 5); the per-document totals are in `retrieval_log`.
 
@@ -50,7 +59,7 @@ Validation and the rejected/ambiguous report are as in M1 (`docs/M1_TECHNICAL.md
 - **Cross-verification:** observations for the same instrument/date(/venue) from different sources are compared. Agreement within tolerance corroborates (highest grade used, no double counting of distributions). Disagreement keeps both rows, records an OPEN `discrepancy`, flags affected metrics `SOURCE_DISCREPANCY` (blocking), and proceeds only if one source clearly outranks the other (exchange > issuer > regulator > aggregator > unknown); ties yield an amount-unavailable placeholder. Resolved discrepancies are never reopened or deleted.
 - Only values with a source attribution, no blocking flag and a display-cleared source are ever published.
 
-## 5. Dashboard (`irie/web`)
+## 5. Dashboard (`irie/web`) - redesigned in M3, see `docs/M3_UI.md`
 Static HTML/JS, no framework, no third-party requests, strict CSP. It renders `data.json` and computes nothing. Summary cards; type, ETF-category and
 text filters; "only with a yield shown"; sortable watchlist (user-chosen sort, unavailable values always last; **no ranking or score**); stars persisted in
 `localStorage`; yield comparison grouped by instrument type (income / other / capital repayment stacked, grey where the split is unavailable); per-instrument

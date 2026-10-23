@@ -4,64 +4,95 @@
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>REIT, InvIT &amp; ETF Analysis</title>
+<meta name="color-scheme" content="light dark">
+<title>Yield Atlas: REITs, InvITs &amp; ETFs</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<header>
-  <h1>REIT, InvIT &amp; ETF Analysis</h1>
-  <p id="meta" data-testid="meta"></p>
+<a class="skip" href="#watchlist">Skip to the watchlist</a>
+<header class="topbar">
+  <div class="brand">
+    <svg class="mark" viewBox="0 0 32 32" aria-hidden="true"><rect x="2" y="2" width="28" height="28" rx="7" class="mark-bg"/><rect x="8" y="16" width="4" height="8" class="mk-a"/><rect x="14" y="10" width="4" height="14" class="mk-b"/><rect x="20" y="13" width="4" height="11" class="mk-c"/></svg>
+    <div><b>Yield Atlas</b><span>REITs · InvITs · ETFs</span></div>
+  </div>
+  <nav aria-label="Sections">
+    <a href="#overview">Overview</a><a href="#watchlist">Watchlist</a><a href="#compare">Compare</a><a href="#news">News</a><a href="#sources">Sources</a>
+  </nav>
+  <div class="tools">
+    <span id="hours" class="pill" data-testid="hours-badge" role="status"></span>
+    <button id="openAlerts" type="button" class="btn" data-testid="open-alerts" aria-haspopup="dialog">Alerts <span id="alertBadge" class="count" data-testid="alert-badge" hidden>0</span></button>
+    <button id="theme" type="button" class="btn" data-testid="theme-toggle" aria-label="Switch light or dark theme" title="Switch theme">Theme</button>
+  </div>
 </header>
-<div id="notice" data-testid="notice" role="status"></div>
-<div id="alerts" data-testid="alerts" role="alert"></div>
 
-<section aria-label="Summary" id="cards" data-testid="cards"></section>
+<main>
+  <div id="notice" class="notice" data-testid="notice" role="status"></div>
+  <div id="warn" class="warn" data-testid="warn" role="status" hidden></div>
+  <div id="alerts" data-testid="alerts" role="alert" aria-live="assertive"></div>
+  <p id="meta" class="meta" data-testid="meta"></p>
 
-<section aria-label="Filters" class="filters">
-  <label>Search <input id="q" type="search" placeholder="name, key or ISIN" data-testid="search"></label>
-  <label>Type
-    <select id="type" data-testid="type-filter">
-      <option value="ALL">All</option><option value="INVIT">InvIT</option><option value="REIT">REIT</option><option value="ETF">ETF</option>
-    </select></label>
-  <label>ETF category <select id="cat" data-testid="cat-filter"></select></label>
-  <label><input id="onlyData" type="checkbox" data-testid="only-data"> Only with a yield shown</label>
-  <label><input id="onlyWatch" type="checkbox" data-testid="only-watch"> Watchlist only</label>
-  <button id="csv" type="button" data-testid="csv">Export CSV</button>
-</section>
+  <section id="overview" aria-label="Overview"><div id="cards" class="cards" data-testid="cards"></div></section>
 
-<section aria-label="Watchlist">
-  <h2>Instruments <small id="count"></small></h2>
-  <div class="tablewrap"><table id="table" data-testid="table"><thead></thead><tbody></tbody></table></div>
-  <p class="note">Sorting is a display convenience chosen by you; there is no ranking or score. Headline yield includes any capital repayment: read it with the income / capital split. "n/a" means unavailable, never zero. "withheld" means the value exists but its source is not cleared for display or the figure carries a blocking data-quality flag.</p>
-</section>
+  <section id="watchlist" aria-labelledby="h-watch">
+    <div class="sechead"><h2 id="h-watch">Watchlist <small id="count"></small></h2></div>
+    <div class="toolbar">
+      <label class="grow">Search<input id="q" type="search" placeholder="Name, key or ISIN" autocomplete="off" data-testid="search"></label>
+      <label>Type<select id="type" data-testid="type-filter"><option value="ALL">All types</option><option value="INVIT">InvIT</option><option value="REIT">REIT</option><option value="ETF">ETF</option></select></label>
+      <label>ETF category<select id="cat" data-testid="cat-filter"></select></label>
+      <label class="check"><input id="onlyData" type="checkbox" data-testid="only-data"> Yield shown</label>
+      <label class="check"><input id="onlyWatch" type="checkbox" data-testid="only-watch"> Starred only</label>
+      <button id="csv" type="button" class="btn" data-testid="csv">Export CSV</button>
+    </div>
+    <div class="tablewrap"><table id="table" data-testid="table"><thead></thead><tbody></tbody></table></div>
+    <div id="empty" class="empty" data-testid="empty-state" hidden></div>
+    <p class="note">Columns sort on request; there is no ranking or score. Headline yield includes any capital repayment, so read it with the income and capital split. <b>n/a</b> means unavailable, never zero. <b>withheld</b> means the figure exists but its source is not cleared for display or it carries a blocking data-quality flag.</p>
+  </section>
 
-<section aria-label="Yield comparison">
-  <h2>Yield comparison</h2>
-  <div id="yieldchart" data-testid="yield-chart"></div>
-</section>
+  <section id="compare" aria-labelledby="h-compare">
+    <div class="sechead"><h2 id="h-compare">Yield comparison</h2></div>
+    <div id="yieldchart" class="panel" data-testid="yield-chart"></div>
+  </section>
 
-<section aria-label="Detail" id="detail" data-testid="detail" hidden></section>
+  <section id="news" aria-labelledby="h-news" data-testid="news-panel">
+    <div class="sechead"><h2 id="h-news">News &amp; scrip announcements</h2>
+      <div class="seg" role="group" aria-label="News filter">
+        <button type="button" data-f="all" data-testid="news-filter-all" aria-pressed="true">All news</button>
+        <button type="button" data-f="reit" data-testid="news-filter-reit" aria-pressed="false">REITs</button>
+        <button type="button" data-f="invit" data-testid="news-filter-invit" aria-pressed="false">InvITs &amp; infrastructure</button>
+        <button type="button" data-f="corp" data-testid="news-filter-corp" aria-pressed="false">Corporate announcements</button>
+      </div>
+    </div>
+    <div id="newslist" class="panel newslist" data-testid="news-list"></div>
+  </section>
 
-<section aria-label="Alerts configuration">
-  <h2>Alerts</h2>
-  <p class="note">Alerts run in your browser against the published data. They only fire on figures that are published and free of blocking data-quality flags. They are informational, not advice.</p>
-  <form id="alertform" data-testid="alert-form">
-    <select id="atype" data-testid="alert-type"></select>
-    <select id="ainst" data-testid="alert-instrument"></select>
-    <input id="aval" type="number" step="any" placeholder="threshold" data-testid="alert-value" required>
-    <button type="submit" data-testid="alert-add">Add alert</button>
+  <section id="sources" aria-labelledby="h-src">
+    <div class="sechead"><h2 id="h-src">Data sources &amp; freshness</h2></div>
+    <div class="tablewrap"><table id="srcTable" data-testid="sources"></table></div>
+    <p class="note"><b>Retrieved</b> is when the data was fetched; <b>observed through</b> is the latest date the market or issuer produced a value. A source can be retrieved on schedule and still serve an older observation. Market prices are only requested during NSE/BSE sessions; announcements and distributions are checked once a day, off-hours.</p>
+  </section>
+</main>
+
+<footer>Informational only. Not investment advice, research or a recommendation, and not a ranking. Figures are derived from the cited sources, may be incomplete and may be revised; check the originals before relying on them.</footer>
+
+<dialog id="drawer" class="drawer" data-testid="drawer" aria-label="Instrument detail"></dialog>
+
+<dialog id="alertModal" class="modal" data-testid="alert-modal" aria-labelledby="am-title">
+  <div class="mhead"><h2 id="am-title">Alert Center</h2><button type="button" class="btn icon" id="closeAlerts" aria-label="Close" data-testid="alert-close">✕</button></div>
+  <form id="alertform" data-testid="alert-form" class="aform">
+    <h3>New alert</h3>
+    <label>Instrument<select id="ainst" data-testid="alert-instrument"></select></label>
+    <label>Trigger<select id="atype" data-testid="alert-type"></select></label>
+    <label>Threshold<input id="aval" type="number" step="any" inputmode="decimal" placeholder="e.g. 9.5 for a yield, 105 for a price" required data-testid="alert-value"></label>
+    <label>Sound<select id="asound" data-testid="alert-sound"><option value="chime">Chime</option><option value="beep">Beep</option><option value="tick">Double tick</option><option value="none">Silent</option></select></label>
+    <button type="submit" class="btn primary" data-testid="alert-add">Save alert</button>
   </form>
-  <ul id="alertlist" data-testid="alert-list"></ul>
-</section>
-
-<section aria-label="Data sources">
-  <h2>Data sources and freshness</h2>
-  <div class="tablewrap"><table id="sources" data-testid="sources"></table></div>
-  <p class="note">Retrieval time is when the data was fetched; observation date is when the market or issuer produced the value. A source can be retrieved hourly and still serve an older observation.</p>
-</section>
-
-<footer>Informational only; not investment advice, research or a recommendation. Figures are derived from the cited sources and may be incomplete; check the originals before relying on them.</footer>
+  <label class="check soundtoggle"><input id="soundOn" type="checkbox" data-testid="alert-sound-enable"> Play sounds in this browser <button type="button" class="btn small" id="testSound" data-testid="alert-sound-test">Test</button></label>
+  <p class="note">Browsers only allow sound after you interact with the page, which is why this switch exists. Alerts are evaluated in your browser on the published figures, only on figures that are published and free of blocking data-quality flags, each time the data refreshes (every 5 minutes while the page is open). They are informational, not advice.</p>
+  <div class="listhead"><h3>Your alerts</h3><span id="alertCount" class="muted"></span></div>
+  <ul id="alertlist" class="alertlist" data-testid="alert-list"></ul>
+</dialog>
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 <script src="app.js"></script>
 </body>
 </html>

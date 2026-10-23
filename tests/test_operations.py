@@ -319,6 +319,9 @@ def test_nothing_cleared_means_nothing_published(demo_db):
         assert all(m["value"] is None for m in i["metrics"].values())
         assert i["history"]["distributions"] == [] and i["history"]["prices"] == []
         assert i["latest"]["price"]["value"] is None
+        assert i["history"]["yield_trend"] == [] and i["holdings"] == []
+        assert not (i["breakdown"] or {}).get("available")          # component breakdown withheld too
+    assert ds["news"]["items"] == [] and ds["news"]["withheld"] == 7   # headlines are third-party content: gated like prices
     assert any(m["withheld"] for i in ds["instruments"] for m in i["metrics"].values())
     pv = export.build_dataset(conn2, closed, demo.DEMO_NOW, "preview")
     assert pv["preview"] and "Do not deploy" in pv["notice"]

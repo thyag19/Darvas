@@ -1,12 +1,14 @@
-# Hourly refresh interface. INERT until the repository variable IRIE_REFRESH_ENABLED is set to 'true'.
-# It runs `irie run-cycle` (sources marked NOT_CLEARED are logged and skipped, never fetched), then builds a PUBLIC-mode
+# Scheduling pass every 15 minutes. INERT until the repository variable IRIE_REFRESH_ENABLED is set to 'true'.
+# `irie run-cycle` decides what is due: market prices hourly during NSE/BSE sessions only (Asia/Kolkata calendar), a
+# once-daily off-hours check for announcements/distributions, nothing otherwise. Sources marked NOT_CLEARED are logged and
+# skipped, never fetched. After the cycle it builds a PUBLIC-mode
 # site as a build artifact. It deploys nothing. Persistent state lives in the Actions cache (best effort): for real
 # operation run the same two commands on infrastructure you control, with operator data in a private inbox.
 # GitHub disables scheduled workflows after 60 days without repository activity.
 name: hourly-refresh
 on:
   schedule:
-    - cron: "17 * * * *"
+    - cron: "*/15 * * * *"
   workflow_dispatch:
 permissions:
   contents: read

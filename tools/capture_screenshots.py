@@ -24,7 +24,9 @@ sys.path.insert(0, str(ROOT))
 
 from playwright.sync_api import sync_playwright  # noqa: E402
 
-from irie import demo, export, ingest, site, storage as st  # noqa: E402
+from irie import demo, export, ingest, site, storage as st
+from irie.market_calendar import load_calendar
+CAL = load_calendar(Path(__file__).resolve().parent.parent / 'config' / 'market_calendar.json')  # noqa: E402
 
 
 def build(tmp: Path, nothing_cleared=False, with_data=True) -> Path:
@@ -34,8 +36,8 @@ def build(tmp: Path, nothing_cleared=False, with_data=True) -> Path:
     reg = demo.demo_registry()
     if nothing_cleared:
         reg = {k: dataclasses.replace(v, display_cleared=False, display_evidence="") for k, v in reg.items()}
-    ingest.run_cycle(conn, reg, {k: ingest.FileInboxFetcher(inbox, lambda: demo.DEMO_NOW) for k in reg}, lambda: demo.DEMO_NOW)
-    ds = export.build_dataset(conn, reg, demo.DEMO_NOW, "public")
+    ingest.run_cycle(conn, reg, {k: ingest.FileInboxFetcher(inbox, lambda: demo.DEMO_NOW) for k in reg}, lambda: demo.DEMO_NOW, calendar=CAL)
+    ds = export.build_dataset(conn, reg, demo.DEMO_NOW, "public", CAL)
     ds["notice"] = "SYNTHETIC DEMO DATA: invented by irie.demo. Not real market data."
     out = tmp / f"site-{int(nothing_cleared)}-{int(with_data)}"
     site.build_site(export.dumps(ds), out)
@@ -80,7 +82,7 @@ def main() -> int:
             ctx = browser.new_context(viewport={"width": w, "height": h}, accept_downloads=True, **kw)
             pg = ctx.new_page()
             pg.goto(url)
-            pg.wait_for_selector("[data-testid=load-error], #notice:has-text('Could not load')" if expect_error else "[data-testid=row]", timeout=15000)
+            pg.wait_for_selector("[data-testid=load-error]" if expect_error else "[data-testid=row]", timeout=15000)
             pg.wait_for_timeout(300)
             return ctx, pg
 
@@ -89,107 +91,110 @@ def main() -> int:
             if selector:
                 pg.locator(selector).first.screenshot(path=str(path))
             else:
+                if full:
+                    pg.evaluate("window.scrollTo(0, 0)")
                 pg.screenshot(path=str(path), full_page=full)
 
-        has = lambda pg, sel: pg.locator(sel).count() > 0
+        def tall(pg, name, selector):
+            """Element screenshot of a scrolling dialog at its full content height."""
+            pg.evaluate(f"(() => {{ const e = document.querySelector('{selector}'); e.style.height = 'auto'; e.style.maxHeight = 'none'; }})()")
+            shot(pg, name, selector)
+
+        def close_drawer(pg):
+            pg.keyboard.press("Escape"); pg.wait_for_timeout(100)
+
         url = servers[0][1]
         ctx, pg = new(url)
-        shot(pg, "01-dashboard-watchlist-full.png")
-        rec("01-dashboard-watchlist-full.png", "Main dashboard: summary cards, filters, watchlist, yield comparison, sources", "Open the site root", note="synthetic demo data")
-        shot(pg, "02-summary-cards.png", "[data-testid=cards]")
-        rec("02-summary-cards.png", "Summary cards", "Top of the dashboard", note="synthetic")
-        shot(pg, "03-watchlist-table.png", "[data-testid=table]")
-        rec("03-watchlist-table.png", "Sortable watchlist table", "Table under Filters; click a column header to sort", note="synthetic; shows n/a and withheld states")
+        shot(pg, "01-dashboard-full-light.png")
+        rec("01-dashboard-full-light.png", "Whole dashboard (light theme): header, summary cards, watchlist, yield comparison, news, sources", "Open the site root", note="synthetic demo data")
+        pg.screenshot(path=str(out / "02-header-market-status-alerts-theme.png"), clip={"x": 0, "y": 0, "width": 1440, "height": 64})
+        rec("02-header-market-status-alerts-theme.png", "Header: navigation, NSE/BSE market-status badge (with 'calendar unverified'), Alerts button, theme switch", "Top of any page", note="synthetic; the calendar flag is real: the shipped 2026 holidays are unverified")
+        shot(pg, "03-summary-cards.png", "[data-testid=cards]")
+        rec("03-summary-cards.png", "Summary cards", "Under the header", note="synthetic")
+        shot(pg, "04-watchlist-table.png", "[data-testid=table]")
+        rec("04-watchlist-table.png", "Watchlist table with n/a and withheld states", "Watchlist section", note="synthetic")
         pg.locator("[data-testid=sort-ttm_yield]").click(); pg.locator("[data-testid=sort-ttm_yield]").click()
-        shot(pg, "04-watchlist-sorted-yield-desc.png", "[data-testid=table]")
-        rec("04-watchlist-sorted-yield-desc.png", "Watchlist sorted by headline yield, descending (unavailable values last)", "Click the 'Headline TTM yield' header twice", note="synthetic")
-        pg.locator("[data-testid=row]", has_text="Beta").locator("[data-testid=star]").click()
-        pg.check("[data-testid=only-watch]")
-        shot(pg, "05-watchlist-starred-only.png", "[data-testid=table]")
-        rec("05-watchlist-starred-only.png", "Starred-instruments watchlist filter", "Star a row, tick 'Watchlist only'", note="synthetic")
+        shot(pg, "05-watchlist-sorted-yield-desc.png", "[data-testid=table]")
+        rec("05-watchlist-sorted-yield-desc.png", "Sorted by headline yield, descending; unavailable values last (a display sort, not a ranking)", "Click 'Headline TTM yield' twice", note="synthetic")
+        pg.locator("[data-testid=row]", has_text="Beta").locator("[data-testid=star]").click(); pg.check("[data-testid=only-watch]")
+        shot(pg, "06-watchlist-starred-only.png", "#watchlist")
+        rec("06-watchlist-starred-only.png", "Starred-only filter", "Star a row, tick 'Starred only'", note="synthetic")
         ctx.close()
 
         ctx, pg = new(url)
         pg.select_option("[data-testid=type-filter]", "ETF"); pg.fill("[data-testid=search]", "gold")
-        shot(pg, "06-filters-etf-search.png", full=False)
-        rec("06-filters-etf-search.png", "Type filter (ETF) plus text search ('gold')", "Choose Type = ETF and type in Search", note="synthetic")
+        shot(pg, "07-filters-etf-search.png", "#watchlist")
+        rec("07-filters-etf-search.png", "Type filter (ETF) plus text search ('gold')", "Type = ETF; search box", note="synthetic")
         pg.fill("[data-testid=search]", "no-such-instrument")
-        shot(pg, "07-empty-state-no-results.png", full=False)
-        rec("07-empty-state-no-results.png", "Empty state for a search with no results", "Search for text that matches nothing", note="synthetic; the current UI shows only an empty table body, no explanatory empty-state message")
+        shot(pg, "08-empty-state-no-results.png", "#watchlist")
+        rec("08-empty-state-no-results.png", "Empty state with a 'Clear filters' action", "Search for text that matches nothing", note="synthetic")
         pg.fill("[data-testid=search]", ""); pg.select_option("[data-testid=type-filter]", "ALL")
         with pg.expect_download() as dl:
             pg.click("[data-testid=csv]")
         shutil.copyfile(dl.value.path(), out / "export-sample.csv")
-        shot(pg, "08-export-csv-control.png", ".filters")
-        rec("08-export-csv-control.png", "CSV export control (filters bar); the downloaded file is saved as export-sample.csv", "Click 'Export CSV'", note="synthetic; a browser download has no page, so the file itself is attached")
+        shot(pg, "09-export-csv-control.png", ".toolbar")
+        rec("09-export-csv-control.png", "Filter toolbar with the Export CSV control; the downloaded file is attached as export-sample.csv", "Click 'Export CSV'", note="synthetic; a browser download has no page, so the file is attached")
         ctx.close()
 
         ctx, pg = new(url)
-        pg.locator("[data-testid=row]", has_text="InvIT Alpha").click()
-        pg.wait_for_timeout(200)
-        det = "[data-testid=drawer]" if has(pg, "[data-testid=drawer]") else "[data-testid=detail]"
-        shot(pg, "09-instrument-detail-invit.png", det)
-        rec("09-instrument-detail-invit.png", "Instrument detail (InvIT): distribution history with component split, price and NAV history, metrics table", "Click any watchlist row", note="synthetic")
-        pg.locator("[data-testid=row]", has_text="REIT Alpha").click()
-        pg.wait_for_timeout(200)
-        shot(pg, "10-instrument-detail-reit-discrepancy.png", det)
-        rec("10-instrument-detail-reit-discrepancy.png", "Instrument detail (REIT) showing an open cross-source discrepancy and withheld figures", "Click the REIT row", note="synthetic discrepancy created by irie.demo")
-        pg.locator("[data-testid=row]", has_text="Equity Index ETF").click()
-        pg.wait_for_timeout(200)
-        shot(pg, "11-instrument-detail-etf.png", det)
-        rec("11-instrument-detail-etf.png", "Instrument detail (ETF): NAV history, premium/discount, NAV return; no income/capital split", "Click the ETF row", note="synthetic")
+        for key, name, title, note in (("InvIT Alpha", "10-drawer-invit.png", "Detail drawer (InvIT): price and headline-yield trend, distribution per payment, component cards (interest, dividend, return of capital), metrics with status and flags", "synthetic"),
+                                       ("REIT Alpha", "11-drawer-reit-discrepancy.png", "Detail drawer (REIT): rental-income component, open cross-source discrepancy, withheld figures, related announcement", "synthetic discrepancy created by irie.demo"),
+                                       ("Equity Index ETF", "12-drawer-etf-holdings.png", "Detail drawer (ETF): NAV history, premium/discount, top-10 holdings; no income/capital split exists for an ETF", "synthetic"),
+                                       ("InvIT Beta", "13-drawer-split-unavailable.png", "Detail drawer where components are not disclosed: the split is explained as unavailable, never estimated", "synthetic")):
+            pg.locator("[data-testid=row]", has_text=key).click(); pg.wait_for_timeout(250)
+            tall(pg, name, "[data-testid=drawer]")
+            rec(name, title, "Click the watchlist row (Enter works too)", note=note)
+            close_drawer(pg)
+        shot(pg, "14-yield-comparison.png", "#compare")
+        rec("14-yield-comparison.png", "Yield comparison grouped by type, income vs capital repayment stacked", "Compare section", note="synthetic")
         ctx.close()
 
         ctx, pg = new(url)
-        shot(pg, "12-yield-comparison.png", "[data-testid=yield-chart]")
-        rec("12-yield-comparison.png", "Yield comparison chart grouped by instrument type", "Section 'Yield comparison'", note="synthetic")
+        pg.click("[data-testid=open-alerts]"); pg.wait_for_timeout(150)
+        shot(pg, "15-alert-center-empty.png", "[data-testid=alert-modal]")
+        rec("15-alert-center-empty.png", "Alert Center modal, empty state: instrument, trigger, threshold, sound, browser-sound switch", "Header > Alerts", note="synthetic")
+        pg.check("[data-testid=alert-sound-enable]")
+        for kind, val, sound, inst in (("yield_above", "5", "chime", "*"), ("price_below", "50", "beep", "DEMO_INVIT_A"), ("premium_above", "20", "tick", "*")):
+            pg.select_option("[data-testid=alert-instrument]", inst); pg.select_option("[data-testid=alert-type]", kind)
+            pg.select_option("[data-testid=alert-sound]", sound); pg.fill("[data-testid=alert-value]", val); pg.click("[data-testid=alert-add]")
+        pg.wait_for_timeout(150)
+        shot(pg, "16-alert-center-active-and-triggered.png", "[data-testid=alert-modal]")
+        rec("16-alert-center-active-and-triggered.png", "Alert Center with one TRIGGERED and two ACTIVE alerts, created/triggered timestamps (IST), per-alert sound, Re-arm/Delete", "Add alerts", note="synthetic; thresholds chosen for the demo data")
+        pg.click("[data-testid=alert-close]"); pg.wait_for_timeout(100)
+        shot(pg, "17-alert-banner-and-badge.png", full=False)
+        rec("17-alert-banner-and-badge.png", "Triggered-alert banner on the page and the badge on the Alerts button", "After an alert triggers", note="synthetic")
         ctx.close()
 
         ctx, pg = new(url)
-        pg.select_option("[data-testid=alert-type]", "yield_above"); pg.fill("[data-testid=alert-value]", "5")
-        pg.click("[data-testid=alert-add]")
-        pg.select_option("[data-testid=alert-type]", "discount_below"); pg.fill("[data-testid=alert-value]", "-50")
-        pg.click("[data-testid=alert-add]")
-        pg.evaluate("window.scrollTo(0, 0)")
-        shot(pg, "13-alerts-inline-form-and-triggered.png")
-        rec("13-alerts-inline-form-and-triggered.png", "Alerts: inline form, configured triggers and triggered banner (current UI has no modal Alert Center)", "Scroll to 'Alerts' and add a rule", note="synthetic")
-        rec(None, "Alert Center modal with timestamps and sound selection", "-", ok=False, note="current UI: alert form is inline, no per-alert timestamps, no TRIGGERED state, no sound")
-        ctx.close()
-
-        ctx, pg = new(url)
-        shot(pg, "14-sources-freshness.png", "[data-testid=sources]")
-        rec("14-sources-freshness.png", "Data sources and freshness table (access status, display-cleared, freshness, last attempt, observed-through)", "Bottom of the page", note="synthetic demo sources only")
+        shot(pg, "18-news-all.png", "#news")
+        rec("18-news-all.png", "News & scrip announcements: All news (each item SYNTHETIC-labelled, with source, IST timestamp, headline, summary, original-source link)", "News section", note="synthetic headlines; links point to a reserved .invalid host")
+        for f, nm, title in (("reit", "19-news-filter-reits.png", "News filter: REITs"), ("invit", "20-news-filter-invits-infrastructure.png", "News filter: InvITs & infrastructure"), ("corp", "21-news-filter-corporate-announcements.png", "News filter: Corporate announcements")):
+            pg.click(f"[data-testid=news-filter-{f}]"); shot(pg, nm, "#news")
+            rec(nm, title, "News section filter buttons", note="synthetic")
+        shot(pg, "22-sources-freshness-schedule.png", "#sources")
+        rec("22-sources-freshness-schedule.png", "Data sources: access, display-cleared flag, schedule, next attempt, freshness, last attempt/success, observed-through", "Sources section", note="synthetic demo sources only")
+        pg.click("[data-testid=theme-toggle]"); pg.wait_for_timeout(200)
+        shot(pg, "23-dashboard-full-dark.png")
+        rec("23-dashboard-full-dark.png", "Dark theme (whole page)", "Header > Theme", note="synthetic")
         ctx.close()
 
         ctx, pg = new(servers[1][1])
-        shot(pg, "15-data-quality-nothing-cleared.png")
-        rec("15-data-quality-nothing-cleared.png", "Public build when no source is cleared for display: every value withheld", "Build with display_cleared=false", note="synthetic; demonstrates the licence gate")
+        shot(pg, "24-nothing-cleared-public-build.png")
+        rec("24-nothing-cleared-public-build.png", "Public build when no source is cleared for display: all values withheld, news withheld with an honest explanation", "Build with display_cleared=false", note="synthetic; demonstrates the licence gate")
         ctx.close()
-
-        ctx, pg = new(url, 390, 844)
-        shot(pg, "16-mobile-390px-full.png")
-        rec("16-mobile-390px-full.png", "Mobile layout (390 px wide)", "Narrow viewport", note="synthetic")
-        ctx.close()
-
         ctx, pg = new(servers[2][1], expect_error=True)
-        shot(pg, "17-error-state-data-missing.png", full=False)
-        rec("17-error-state-data-missing.png", "Error state when data.json cannot be loaded", "Serve the site without data.json", note="synthetic site, data file removed")
+        shot(pg, "25-error-data-missing.png", full=False)
+        rec("25-error-data-missing.png", "Error state with Retry when data.json cannot be loaded", "Serve the site without data.json", note="synthetic site, data file removed")
         ctx.close()
-
-        ctx, pg = new(url)
-        for tid, title in (("news-panel", "Live news feed and scrip announcements panel"),
-                           ("hours-badge", "Market-hours / refresh-schedule status"),
-                           ("theme-toggle", "Light/dark theme switch")):
-            if has(pg, f"[data-testid={tid}]"):
-                nm = {"news-panel": "18-news-panel.png", "hours-badge": "19-market-status.png", "theme-toggle": "20-dark-theme.png"}[tid]
-                if tid == "theme-toggle":
-                    pg.click("[data-testid=theme-toggle]"); pg.wait_for_timeout(200); shot(pg, nm)
-                else:
-                    shot(pg, nm, f"[data-testid={tid}]")
-                rec(nm, title, f"data-testid={tid}", note="synthetic")
-            else:
-                rec(None, title, "-", ok=False, note="no such UI in this build")
+        ctx, pg = new(url, 390, 844)
+        shot(pg, "26-mobile-390px-full.png")
+        rec("26-mobile-390px-full.png", "Mobile layout (390 px): condensed table columns, stacked header", "Narrow viewport", note="synthetic")
+        pg.locator("[data-testid=row]", has_text="InvIT Alpha").click(); pg.wait_for_timeout(250)
+        shot(pg, "27-mobile-drawer.png", full=False)
+        rec("27-mobile-drawer.png", "Detail drawer on mobile (full width)", "Tap a row on a narrow viewport", note="synthetic")
         ctx.close()
+        rec(None, "Push or e-mail alert delivery", "-", ok=False, note="not implemented: needs a server and recipient data; alerts run in the open browser tab only")
+        rec(None, "G-Sec benchmark and spread columns", "-", ok=False, note="not implemented: no cleared benchmark source")
         browser.close()
     for s, _ in servers:
         s.shutdown()
