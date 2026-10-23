@@ -30,19 +30,42 @@ class MarketStatus:
     verified: bool = False
 
 
+VERIFIED, SECONDARY, DISPUTED = "verified_official", "unverified_secondary", "disputed"
+
+
 @dataclass
 class MarketCalendar:
     regular: Window = (dt.time(9, 15), dt.time(15, 30))
     holidays: Dict[dt.date, str] = field(default_factory=dict)
     special: Dict[dt.date, Optional[Window]] = field(default_factory=dict)   # None = exceptional full closure
     years: frozenset = frozenset()
-    verified: bool = False
+    holiday_status: Dict[dt.date, str] = field(default_factory=dict)         # per date: verified_official | unverified_secondary | disputed
+    pending: Dict[dt.date, str] = field(default_factory=dict)                # exceptional sessions with unconfirmed times: NOT polled
+    regular_status: str = SECONDARY
+    complete_years: frozenset = frozenset()                                  # years whose holiday list is asserted complete from an official circular
+    circulars: tuple = ()
+
+    @property
+    def verified(self) -> bool:
+        """True only when every fact the schedule relies on is verified from an official circular that was read."""
+        return (self.regular_status == VERIFIED and self.years == self.complete_years and not self.pending
+                and all(v == VERIFIED for v in self.holiday_status.values()))
+
+    def verification(self) -> dict:
+        n = len(self.holiday_status)
+        return {"regular_session": self.regular_status, "holidays_verified": sum(v == VERIFIED for v in self.holiday_status.values()),
+                "holidays_total": n, "disputed": sorted(d.isoformat() for d, v in self.holiday_status.items() if v == DISPUTED),
+                "years_complete": sorted(self.complete_years),
+                "pending_sessions": [{"date": d.isoformat(), "note": t} for d, t in sorted(self.pending.items())],
+                "official_circulars": [{"number": c["number"], "date": c["date"], "read": c["read"]} for c in self.circulars]}
 
     def covers(self, d: dt.date) -> bool:
         return d.year in self.years
 
     def window(self, d: dt.date) -> Optional[Window]:
         """Trading window for a calendar date, or None if the exchange is closed that day."""
+        if d in self.pending:
+            return None                      # exceptional session with unconfirmed times: fail closed
         if d in self.special:
             return self.special[d]
         if d.weekday() >= 5 or d in self.holidays:
@@ -56,6 +79,8 @@ class MarketCalendar:
         n = now.astimezone(IST)
         d, w = n.date(), self.window(n.date())
         base = dict(calendar_loaded=self.covers(d), verified=self.verified)
+        if d in self.pending:
+            return MarketStatus(False, "SPECIAL_SESSION_UNVERIFIED", self.pending[d][:80], **base)
         if w is None:
             if d in self.holidays:
                 return MarketStatus(False, "HOLIDAY", self.holidays[d], **base)
@@ -102,18 +127,44 @@ def parse_calendar(obj: dict) -> MarketCalendar:
     if obj.get("timezone", "Asia/Kolkata") != "Asia/Kolkata":
         raise ValueError("only Asia/Kolkata is supported")
     reg = obj.get("regular_session", {"open": "09:15", "close": "15:30"})
-    cal = MarketCalendar(regular=(_t(reg["open"]), _t(reg["close"])), verified=bool(obj.get("verified", False)))
+    circulars = tuple(obj.get("official_circulars", []))
+    read_circulars = [c for c in circulars if c.get("read")]
+    cal = MarketCalendar(regular=(_t(reg["open"]), _t(reg["close"])), regular_status=reg.get("status", SECONDARY), circulars=circulars)
     if cal.regular[0] >= cal.regular[1]:
         raise ValueError("regular session must open before it closes")
-    years = set()
+
+    def need_evidence(kind: str, what: str, entry: dict) -> None:
+        # a date can only be called verified with a stated official source, a check date, and a circular that was actually read
+        if not (entry.get("evidence_url") and entry.get("checked_on") and read_circulars):
+            raise ValueError(f"{what}: status {kind!r} needs evidence_url, checked_on and an official circular with read=true")
+
+    if cal.regular_status == VERIFIED:
+        need_evidence(VERIFIED, "regular_session", reg)
+    years, complete = set(), set()
     for y, body in obj.get("years", {}).items():
         years.add(int(y))
         for h in body.get("holidays", []):
-            cal.holidays[dt.date.fromisoformat(h["date"])] = h.get("name", "")
-        for s in body.get("special_sessions", []):
-            d = dt.date.fromisoformat(s["date"])
-            cal.special[d] = None if s.get("closed") else (_t(s["open"]), _t(s["close"]))
-    cal.years = frozenset(years)
+            d = dt.date.fromisoformat(h["date"])
+            cal.holidays[d] = h.get("name", "")
+            st = h.get("status", SECONDARY)
+            if st not in (VERIFIED, SECONDARY, DISPUTED):
+                raise ValueError(f"{h['date']}: unknown status {st!r}")
+            if st == VERIFIED:
+                need_evidence(st, h["date"], h)
+            cal.holiday_status[d] = st
+        for s_ in body.get("special_sessions", []):
+            d = dt.date.fromisoformat(s_["date"])
+            if s_.get("status", SECONDARY) != VERIFIED:
+                raise ValueError(f"special session {s_['date']} is not verified_official: list it under pending_sessions (it is not polled)")
+            need_evidence(VERIFIED, f"special session {s_['date']}", s_)
+            cal.special[d] = None if s_.get("closed") else (_t(s_["open"]), _t(s_["close"]))
+        for p_ in body.get("pending_sessions", []):
+            cal.pending[dt.date.fromisoformat(p_["date"])] = p_.get("note", "exceptional session, times unconfirmed")
+        if body.get("holidays_complete"):
+            if any(cal.holiday_status[dt.date.fromisoformat(h["date"])] != VERIFIED for h in body.get("holidays", [])):
+                raise ValueError(f"{y}: holidays_complete requires every holiday to be verified_official")
+            complete.add(int(y))
+    cal.years, cal.complete_years = frozenset(years), frozenset(complete)
     return cal
 
 

@@ -10,7 +10,7 @@ dev = ["pytest>=8", "openpyxl>=3.1"]   # openpyxl is needed only by tools/extrac
 
 [tool.setuptools]
 packages = ["irie", "irie.calc"]
-package-data = { irie = ["schema.sql"] }
+package-data = { irie = ["schema.sql", "web/*"] }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -402,3 +402,62 @@ def test_public_build_with_nothing_cleared_shows_no_values_and_honest_news_state
         pg.ctx.close()
     finally:
         srv.shutdown()
+
+
+@pytest.mark.parametrize("width", [1440, 1280, 1100])
+def test_watchlist_fits_without_horizontal_scroll_on_laptops(app, width):
+    browser, url = app
+    pg = open_page(browser, url, width, 900)
+    sw, cw = pg.evaluate("(() => { const t = document.querySelector('.tablewrap'); return [t.scrollWidth, t.clientWidth]; })()")
+    assert sw <= cw + 1, (width, sw, cw)
+    assert not pg.errors, pg.errors
+    pg.ctx.close()
+
+
+def test_disputed_price_is_not_shown_charted_or_alertable(page):
+    assert cell(page, "REIT Alpha", 3) == "disputed"                                  # two sources disagree on the latest close
+    page.locator("[data-testid=row]", has_text="REIT Alpha").click()
+    assert "disputed" in page.inner_text("[data-testid=drawer]").lower() or "withheld" in page.inner_text("[data-testid=drawer]")
+    page.keyboard.press("Escape")
+    add_alert(page, "price_above", 1, inst="DEMO_REIT_A", sound="none")               # 316 > 1 would fire on an undisputed price
+    assert page.locator("[data-testid=alert-hit]").count() == 0
+    assert page.inner_text("[data-testid=alert-state]") == "ACTIVE"
+    page.evaluate("localStorage.clear()")
+
+
+def test_chart_text_stays_readable_on_a_phone(app):
+    browser, url = app
+    pg = open_page(browser, url, 390, 844)
+    pg.locator("[data-testid=row]", has_text="InvIT Alpha").click()
+    scale = pg.evaluate("(() => { const s = document.querySelector('[data-testid=trend-chart]'); return s.getBoundingClientRect().width / s.viewBox.baseVal.width; })()")
+    assert scale >= 0.9, scale                                                          # 11px SVG text renders at >= ~10px
+    assert not pg.errors, pg.errors
+    pg.ctx.close()
+
+
+@pytest.mark.parametrize("width", [960, 768, 600])
+def test_tablet_widths_scroll_the_table_inside_its_box_never_the_page(app, width):
+    browser, url = app
+    pg = open_page(browser, url, width, 900)
+    assert pg.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1")
+    assert not pg.errors, pg.errors
+    pg.ctx.close()
+
+
+def test_csv_export_carries_only_published_correctly_attributed_values(page):
+    with page.expect_download() as dl:
+        page.click("[data-testid=csv]")
+    text = Path(dl.value.path()).read_text()
+    recs = list(csv.DictReader(io.StringIO("\n".join(l for l in text.splitlines() if not l.startswith("#")))))
+    assert len(recs) == 7
+    metrics = sorted({k[:-len("_status")] for k in recs[0] if k.endswith("_status")})
+    for r in recs:
+        if r["price"]:                                                              # every shown price names its source, date and retrieval time
+            assert r["price_source"] == "DEMO" and r["price_date"] and r["price_retrieved_at"].endswith("Z")
+        for m in metrics:
+            if r[m] != "":
+                assert r[m + "_status"] == "OK", (r["key"], m)                      # a value only ever accompanies an OK, non-withheld status
+                assert "UNVERIFIED_SOURCE" not in r[m + "_flags"] and "SOURCE_DISCREPANCY" not in r[m + "_flags"]
+    by = {r["key"]: r for r in recs}
+    assert by["DEMO_REIT_A"]["price"] == "" and by["DEMO_INVIT_C"]["ttm_yield"] == ""   # disputed price / aggregator-grade amounts are blank
+    assert by["DEMO_ETF_GOLD"]["ttm_dpu_status"] == "NOT_APPLICABLE" and by["DEMO_ETF_GOLD"]["ttm_dpu"] == ""

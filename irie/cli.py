@@ -44,7 +44,19 @@ def main(argv=None) -> int:
     b.add_argument("--mode", choices=["public", "preview"], default="public")
     d = sub.add_parser("build-demo", help="build the dashboard from SYNTHETIC data (never real market data)")
     d.add_argument("--out", required=True)
+    d.add_argument("--calendar", default=None, help="market calendar JSON (default: ./config/market_calendar.json if present)")
+    c = sub.add_parser("check-site", help="pre-deployment gate: CSP, external references, data leaks, secrets")
+    c.add_argument("--dir", required=True)
+    c.add_argument("--allow-preview", action="store_true")
     a = ap.parse_args(argv)
+    if a.cmd == "check-site":
+        from .sitecheck import check_site
+        findings = check_site(a.dir, allow_preview=a.allow_preview)
+        for f in findings:
+            print(f"{f.level}: {f.where}: {f.message}")
+        errors = [f for f in findings if f.level == "ERROR"]
+        print(f"site check: {len(errors)} error(s), {len(findings) - len(errors)} warning(s)")
+        return 1 if errors else 0
     if a.cmd in ("run-cycle", "build-site", "build-demo"):
         return _operate(a)
     as_of = dt.date.fromisoformat(a.as_of) if a.as_of else None
@@ -73,7 +85,12 @@ def _operate(a) -> int:
     from . import storage as st
     from .market_calendar import load_calendar
     from .sources import load_registry
-    cal_path = Path(getattr(a, 'calendar', None) or Path(__file__).resolve().parent.parent / 'config' / 'market_calendar.json')
+    arg = getattr(a, "calendar", None)
+    candidates = [Path(arg)] if arg else [Path("config/market_calendar.json"), Path(__file__).resolve().parent.parent / "config" / "market_calendar.json"]
+    cal_path = next((c for c in candidates if c.exists()), None)
+    if cal_path is None and a.cmd != "build-demo":
+        print(f"error: market calendar not found ({', '.join(map(str, candidates))}); market-hours scheduling needs it", file=sys.stderr)
+        return 2
 
     utcnow = lambda: dt.datetime.now(dt.timezone.utc)
     if a.cmd == "build-demo":
@@ -83,7 +100,7 @@ def _operate(a) -> int:
             st.init_schema(conn)
             reg = demo.demo_registry()
             fetchers = {k: ingest.FileInboxFetcher(tmp, lambda: demo.DEMO_NOW) for k in reg}
-            cal = load_calendar(cal_path)
+            cal = load_calendar(cal_path) if cal_path else None      # a demo without a calendar simply shows 'calendar not loaded'
             rep = ingest.run_cycle(conn, reg, fetchers, lambda: demo.DEMO_NOW, calendar=cal)
             ds = export.build_dataset(conn, reg, demo.DEMO_NOW, "public", cal)
             site.build_site(export.dumps(ds), a.out)

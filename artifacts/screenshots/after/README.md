@@ -1,4 +1,4 @@
-# Screenshots - after M3 (redesigned UI)
+# Screenshots - after M4 (validated UI)
 
 Rendered by real Chromium from the dashboard in this repository, using **synthetic demo data only** (`irie/demo.py`). Every name, price, yield and date is invented; none of it is market data. Regenerate with `python tools/capture_screenshots.py --out <dir>`.
 

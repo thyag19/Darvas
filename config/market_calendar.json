@@ -1,34 +1,142 @@
 {
-  "_comment": "NSE/BSE equity-segment trading calendar. verified=false: the 2026 holiday dates below come from broker/fund-house web pages that agreed with each other, NOT from the NSE/BSE circular (not read; the exchanges' sites are not reachable from the build environment). The operator must compare against the official circular and set verified=true. Unlisted exceptional sessions (for example a Muhurat session whose times are not yet published) are NOT assumed: add them to special_sessions with their times once announced.",
+  "_comment": "NSE/BSE equity-segment trading calendar with per-date verification. 'verified_official' needs evidence_url, checked_on and a circular marked read=true; nothing here is verified_official. The official 2026 circulars were IDENTIFIED (numbers below, from search-result listings of nsearchives.nseindia.com URLs) but could NOT be read: that host is blocked by the build environment's network policy (HTTP 403 on CONNECT). Holiday dates come from broker/fund-house pages that agree with each other plus search snippets of the official circulars' text. Exceptional sessions whose times are not officially confirmed are 'pending_sessions' and are NOT polled (fail closed).",
   "timezone": "Asia/Kolkata",
-  "regular_session": {"open": "09:15", "close": "15:30"},
-  "verified": false,
+  "regular_session": {
+    "open": "09:15",
+    "close": "15:30",
+    "status": "unverified_secondary",
+    "note": "09:15-15:30 IST normal session is widely reported; the Muhurat press reports also describe a Closing Auction Session. Not read from an official circular."
+  },
   "sources": [
     "https://www.bajajbroking.in/nse-holidays",
     "https://cleartax.in/s/nse-holidays-2026",
-    "https://www.tatamutualfund.com/blogs/nse-holidays-2026"
+    "https://www.tatamutualfund.com/blogs/nse-holidays-2026",
+    "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf (official, unread)",
+    "https://www.businesstoday.in/markets/stocks/story/muhurat-trading-2026-nse-bse-announce-diwali-timings-check-full-schedule-562486-2026-10-19 (press)"
   ],
   "years": {
     "2026": {
       "holidays": [
-        {"date": "2026-01-15", "name": "Municipal elections closure (reported by some sources as a late addition)"},
-        {"date": "2026-01-26", "name": "Republic Day"},
-        {"date": "2026-03-03", "name": "Holi"},
-        {"date": "2026-03-26", "name": "Ram Navami"},
-        {"date": "2026-03-31", "name": "Mahavir Jayanti"},
-        {"date": "2026-04-03", "name": "Good Friday"},
-        {"date": "2026-04-14", "name": "Dr. Ambedkar Jayanti"},
-        {"date": "2026-05-01", "name": "Maharashtra Day"},
-        {"date": "2026-05-28", "name": "Bakri Id"},
-        {"date": "2026-06-26", "name": "Muharram"},
-        {"date": "2026-09-14", "name": "Ganesh Chaturthi"},
-        {"date": "2026-10-02", "name": "Gandhi Jayanti"},
-        {"date": "2026-10-20", "name": "Dussehra"},
-        {"date": "2026-11-10", "name": "Diwali Balipratipada"},
-        {"date": "2026-11-24", "name": "Guru Nanak Jayanti"},
-        {"date": "2026-12-25", "name": "Christmas"}
+        {
+          "date": "2026-01-15",
+          "name": "Municipal elections closure (reported by some sources as a late addition) - sources conflict: some call it a full trading holiday; an official NSE Clearing circular found only changes the settlement schedule. A past date; treated as closed (fail closed).",
+          "status": "disputed"
+        },
+        {
+          "date": "2026-01-26",
+          "name": "Republic Day",
+          "status": "unverified_secondary"
+        },
+        {
+          "date": "2026-03-03",
+          "name": "Holi",
+          "status": "unverified_secondary"
+        },
+        {
+          "date": "2026-03-26",
+          "name": "Ram Navami",
+          "status": "unverified_secondary"
+        },
+        {
+          "date": "2026-03-31",
+          "name": "Mahavir Jayanti",
+          "status": "unverified_secondary"
+        },
+        {
+          "date": "2026-04-03",
+          "name": "Good Friday",
+          "status": "unverified_secondary"
+        },
+        {
+          "date": "2026-04-14",
+          "name": "Dr. Ambedkar Jayanti",
+          "status": "unverified_secondary"
+        },
+        {
+          "date": "2026-05-01",
+          "name": "Maharashtra Day",
+          "status": "unverified_secondary"
+        },
+        {
+          "date": "2026-05-28",
+          "name": "Bakri Id",
+          "status": "unverified_secondary"
+        },
+        {
+          "date": "2026-06-26",
+          "name": "Muharram",
+          "status": "unverified_secondary"
+        },
+        {
+          "date": "2026-09-14",
+          "name": "Ganesh Chaturthi",
+          "status": "unverified_secondary"
+        },
+        {
+          "date": "2026-10-02",
+          "name": "Gandhi Jayanti",
+          "status": "unverified_secondary"
+        },
+        {
+          "date": "2026-10-20",
+          "name": "Dussehra",
+          "status": "unverified_secondary"
+        },
+        {
+          "date": "2026-11-10",
+          "name": "Diwali Balipratipada",
+          "status": "unverified_secondary"
+        },
+        {
+          "date": "2026-11-24",
+          "name": "Guru Nanak Jayanti",
+          "status": "unverified_secondary"
+        },
+        {
+          "date": "2026-12-25",
+          "name": "Christmas",
+          "status": "unverified_secondary"
+        }
       ],
-      "special_sessions": []
+      "special_sessions": [],
+      "holidays_complete": false,
+      "pending_sessions": [
+        {
+          "date": "2026-11-08",
+          "status": "unverified_secondary",
+          "note": "Diwali Muhurat session on a Sunday. Press reports a main session 14:20-15:30 IST with pre-open 14:05-14:20 and minute-level differences between reports; the circular (NSE/CMTR/76941) was not read, so the times are NOT used and no polling happens.",
+          "reported_window": {
+            "open": "14:20",
+            "close": "15:30"
+          }
+        }
+      ]
     }
-  }
+  },
+  "official_circulars": [
+    {
+      "number": "NSE/CMTR/71775",
+      "date": "2025-12-12",
+      "subject": "Trading holidays for calendar year 2026 (Capital Market segment)",
+      "url": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+      "read": false,
+      "seen_via": "web-search listing of the official archive URL; its weekend-holiday rows were quoted in the snippet; full text not read"
+    },
+    {
+      "number": "NSE/FAOP/71777",
+      "date": "2025-12-12",
+      "subject": "Trading holidays 2026 (Equity Derivatives segment): 15 weekday closures",
+      "url": "https://nsearchives.nseindia.com/content/circulars/FAOP71777.pdf",
+      "read": false,
+      "seen_via": "web-search listing; not read"
+    },
+    {
+      "number": "NSE/CMTR/76941",
+      "date": "2026-10-19",
+      "subject": "Diwali Muhurat trading session, Sunday 8-Nov-2026 (Capital Market)",
+      "url": "https://nsearchives.nseindia.com/content/circulars/CMTR76941.pdf",
+      "read": false,
+      "seen_via": "web-search listing; timings known only from press reports"
+    }
+  ]
 }

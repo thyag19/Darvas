@@ -72,10 +72,10 @@ def write_demo_inbox(root) -> None:
         for w in range(70):
             d = start + dt.timedelta(weeks=w)
             val = b * (1 + 0.04 * math.sin(w / 6.0 + list(base).index(k)) + drift * w)
-            px += f"{k},{d},{val:.2f},NSE\n"
+            px += f"{k},{d},{val:.2f},DEMO-EXCH\n"
             if k.startswith("DEMO_ETF"):
                 nv += f"{k},{d},{val * 1.001:.4f},FUND_NAV,ISSUER\n"
-        px += f"{k},{LAST_TRADE},{b * 1.02:.2f},NSE\n"
+        px += f"{k},{LAST_TRADE},{b * 1.02:.2f},DEMO-EXCH\n"
         if k.startswith("DEMO_ETF"):
             nv += f"{k},{LAST_TRADE},{b * 1.02 * 1.001:.4f},FUND_NAV,ISSUER\n"
     for k, n in (("DEMO_INVIT_A", 105.0), ("DEMO_INVIT_B", 98.0), ("DEMO_INVIT_C", 112.0), ("DEMO_REIT_A", 285.0)):
@@ -89,7 +89,7 @@ def write_demo_inbox(root) -> None:
     write_demo_news_and_holdings(root)
     # second, lower-grade source disagreeing on one REIT price: exercises discrepancy handling
     (root / "DEMO2" / "prices_demo2.csv").write_text(
-        _hdr("instrument_key", "date", "price", "venue") + f"DEMO_REIT_A,{LAST_TRADE},{310.0 * 1.02 + 6:.2f},NSE\n")
+        _hdr("instrument_key", "date", "price", "venue") + f"DEMO_REIT_A,{LAST_TRADE},{310.0 * 1.02 + 6:.2f},DEMO-EXCH\n")
 
 
 def write_demo_news_and_holdings(root) -> None:

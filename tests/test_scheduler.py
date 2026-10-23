@@ -13,11 +13,14 @@ from irie.models import SourceGrade as G
 from irie.sources import Access, SourceSpec
 
 ROOT = Path(__file__).resolve().parent.parent
+EVID = {"status": "verified_official", "evidence_url": "https://example.test/circular", "checked_on": "2026-10-01"}
 CAL = parse_calendar({
-    "timezone": "Asia/Kolkata", "regular_session": {"open": "09:15", "close": "15:30"}, "verified": True,
-    "years": {"2026": {"holidays": [{"date": "2026-10-20", "name": "Dussehra"}, {"date": "2026-11-10", "name": "Diwali Balipratipada"}],
-                       "special_sessions": [{"date": "2026-11-08", "open": "18:00", "close": "18:50"},
-                                            {"date": "2026-10-28", "closed": True}]}}})
+    "timezone": "Asia/Kolkata", "regular_session": {"open": "09:15", "close": "15:30", **EVID},
+    "official_circulars": [{"number": "TEST/1", "date": "2025-12-12", "read": True}],
+    "years": {"2026": {"holidays": [{"date": "2026-10-20", "name": "Dussehra", **EVID}, {"date": "2026-11-10", "name": "Diwali Balipratipada", **EVID}],
+                       "holidays_complete": True,
+                       "special_sessions": [{"date": "2026-11-08", "open": "18:00", "close": "18:50", **EVID},
+                                            {"date": "2026-10-28", "closed": True, **EVID}]}}})
 
 
 def ist(y, mo, d, h, mi=0):

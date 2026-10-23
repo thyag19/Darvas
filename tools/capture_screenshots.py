@@ -92,7 +92,7 @@ def main() -> int:
                 pg.locator(selector).first.screenshot(path=str(path))
             else:
                 if full:
-                    pg.evaluate("window.scrollTo(0, 0)")
+                    pg.evaluate("window.scrollTo({top: 0, behavior: 'instant'})"); pg.wait_for_timeout(120)
                 pg.screenshot(path=str(path), full_page=full)
 
         def tall(pg, name, selector):

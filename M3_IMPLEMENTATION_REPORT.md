@@ -66,3 +66,6 @@ New: `irie/{market_calendar,scheduler}.py`, `config/market_calendar.json`, `test
 `artifacts/screenshots/**`, this report. Rewritten: `irie/web/{index.html,app.js,style.css}`, `tests/test_e2e_dashboard.py`, `tools/capture_screenshots.py`.
 Modified: `irie/{ingest,freshness,sources,storage,importing,export,demo,cli,registry,result,models}.py`, `irie/calc/etf.py`, `irie/schema.sql`, `irie/web/_headers`
 (unchanged content), `config/sources.json`, `.github/workflows/refresh.yml`, `docs/M2_OPERATIONS.md`, `tests/test_operations.py`.
+
+## M4 follow-up
+Defects found by the M4 review (disputed prices charted/alertable, table wider than its box, unreadable phone charts, uninstalled web assets, installed-package calendar lookup) are fixed; the calendar now records per-date verification (nothing verified), a pre-publication gate exists, and the data-source assessment is extended. See `M4_DEPLOYMENT_READINESS_REPORT.md`.

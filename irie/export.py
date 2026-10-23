@@ -101,6 +101,7 @@ def build_dataset(conn, registry: Mapping[str, SourceSpec], now: dt.datetime, mo
                                     lambda n: (n.nav_date, n.kind))
         lev_rows = st.load_leverage_rows(conn, key)
         lev = max(lev_rows, key=lambda x: x[0].date)[0] if lev_rows else None
+        disputed = {f: {d.ref_date for d in open_d.get(key, []) if d.field == f} for f in ("price", "nav")}
         price = price_hist[-1] if price_hist else None
         nav = nav_hist[-1] if nav_hist else None
         holds = st.load_holdings(conn, key) if inst.type is InstrumentType.ETF else []
@@ -136,16 +137,20 @@ def build_dataset(conn, registry: Mapping[str, SourceSpec], now: dt.datetime, mo
             "metrics": {n: _metric_json(n, r, sources, mode) for n, r in results.items()
                         if r.status.value != "NOT_APPLICABLE"},
             "latest": {
-                "price": None if not price else {"value": _num(price[0].price) if cleared(price[0].source_id) else None,
-                                                 "date": price[0].date.isoformat(), "venue": price[0].venue,
-                                                 "source": price[0].source_id, "retrieved_at": price[1]},
-                "nav": None if not nav else {"value": _num(nav[0].nav) if cleared(nav[0].source_id) else None,
-                                             "date": nav[0].nav_date.isoformat(), "source": nav[0].source_id,
-                                             "grade": nav[0].grade.value, "retrieved_at": nav[1]}},
+                "price": None if not price else {
+                    "value": _num(price[0].price) if cleared(price[0].source_id) and price[0].date not in disputed["price"] else None,
+                    "disputed": price[0].date in disputed["price"], "date": price[0].date.isoformat(), "venue": price[0].venue,
+                    "source": price[0].source_id, "retrieved_at": price[1]},
+                "nav": None if not nav else {
+                    "value": _num(nav[0].nav) if cleared(nav[0].source_id) and nav[0].nav_date not in disputed["nav"] else None,
+                    "disputed": nav[0].nav_date in disputed["nav"], "date": nav[0].nav_date.isoformat(), "source": nav[0].source_id,
+                    "grade": nav[0].grade.value, "retrieved_at": nav[1]}},
             "breakdown": breakdown, "holdings": top_holdings,
             "history": {"distributions": dist_hist, "yield_trend": trend,
-                        "prices": [[p.date.isoformat(), _num(p.price)] for p, _ in price_hist if cleared(p.source_id)],
-                        "navs": [[n.nav_date.isoformat(), _num(n.nav)] for n, _ in nav_hist if cleared(n.source_id)]},
+                        "prices": [[p.date.isoformat(), _num(p.price)] for p, _ in price_hist
+                                   if cleared(p.source_id) and p.date not in disputed["price"]],
+                        "navs": [[n.nav_date.isoformat(), _num(n.nav)] for n, _ in nav_hist
+                                 if cleared(n.source_id) and n.nav_date not in disputed["nav"]]},
             "open_discrepancies": [{"field": d.field, "date": d.ref_date.isoformat(), "a": d.source_a, "b": d.source_b}
                                    for d in open_d.get(key, [])]})
     stat = ingest.source_statuses(conn, registry, now, calendar)
@@ -178,7 +183,7 @@ def _market(cal: Optional[MarketCalendar], now: dt.datetime) -> dict:
     no = cal.next_open(now)
     return {"known": True, "open": st_.open, "reason": st_.reason, "holiday": st_.holiday_name, "calendar_loaded": st_.calendar_loaded,
             "calendar_verified": st_.verified, "next_open": fr.utc_iso(no) if no else None,
-            "session": f"{cal.regular[0]:%H:%M}-{cal.regular[1]:%H:%M} IST"}
+            "session": f"{cal.regular[0]:%H:%M}-{cal.regular[1]:%H:%M} IST", "verification": cal.verification()}
 
 
 def _news(conn, registry, sources, mode) -> dict:

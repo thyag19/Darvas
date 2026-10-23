@@ -20,6 +20,8 @@ function h(tag, attrs, ...kids) {
   return e;
 }
 const NS = "http://www.w3.org/2000/svg";
+// chart width follows the screen so axis text stays readable on a phone (SVG text is in viewBox units)
+const cw = () => Math.max(300, Math.min(600, document.documentElement.clientWidth - 64));
 function s(tag, attrs, ...kids) {
   const e = document.createElementNS(NS, tag);
   for (const [k, v] of Object.entries(attrs || {})) e.setAttribute(k, v);
@@ -44,11 +46,11 @@ const COLS = [
   { id: "type", label: "Type", val: i => i.type, text: true },
   { id: "price", label: "Last price", val: i => i.latest.price && i.latest.price.value, fmt: rupee, cell: i => i.latest.price },
   { id: "ttm_yield", label: "Headline TTM yield", val: i => mv(i, "ttm_yield"), fmt: pct, metric: "ttm_yield" },
-  { id: "income_yield", label: "Income yield", val: i => mv(i, "income_yield"), fmt: pct, metric: "income_yield", cls: "hide-sm" },
+  { id: "income_yield", label: "Income yield", val: i => mv(i, "income_yield"), fmt: pct, metric: "income_yield", cls: "hide-md" },
   { id: "capital_repayment_share", label: "Capital share", val: i => mv(i, "capital_repayment_share"), fmt: pct, metric: "capital_repayment_share", cls: "hide-sm" },
   { id: "premium", label: "Prem. / (disc.) to NAV", val: i => { const m = premiumMetric(i); return m ? m.value : null; }, fmt: pct, metricFn: premiumMetric, cls: "hide-sm" },
   { id: "nav_return_1y", label: "1y NAV return", val: i => mv(i, "nav_return_1y"), fmt: pct, metric: "nav_return_1y", cls: "hide-sm" },
-  { id: "observed", label: "Price date", val: i => i.latest.price && i.latest.price.date, text: true, cell: i => i.latest.price, cls: "hide-sm" },
+  { id: "observed", label: "Price date", val: i => i.latest.price && i.latest.price.date, text: true, cell: i => i.latest.price, cls: "hide-md" },
   { id: "flags", label: "Data flags", val: i => flagsOf(i).length, flags: true },
 ];
 function flagsOf(i) {
@@ -84,7 +86,8 @@ function renderStatus() {
   hb.className = "pill " + (mk.known ? (mk.open ? "open" : "closed") : "");
   if (!mk.known) hb.textContent = "Market hours: calendar not loaded";
   else hb.textContent = (mk.open ? "NSE/BSE open" : "NSE/BSE closed" + (mk.holiday ? ` · ${mk.holiday}` : mk.reason === "WEEKEND" ? " · weekend" : "")) + (mk.calendar_verified ? "" : " · calendar unverified");
-  hb.title = `Status when this page was generated (${ist(d.generated_at)}). Session ${mk.session || "n/a"}. ` + (mk.next_open ? `Next open ${ist(mk.next_open)}.` : "") + " Prices are only requested during sessions.";
+  const vf = mk.verification;
+  hb.title = `Status when this page was generated (${ist(d.generated_at)}). Session ${mk.session || "n/a"}. ` + (vf ? `Calendar: ${vf.holidays_verified} of ${vf.holidays_total} holiday dates verified against an official circular${vf.pending_sessions.length ? `; ${vf.pending_sessions.length} exceptional session(s) pending confirmation and not polled` : ""}. ` : "") + (mk.next_open ? `Next open ${ist(mk.next_open)}.` : "") + " Prices are only requested during sessions.";
   $("notice").textContent = d.notice; $("notice").className = "notice" + (d.preview ? " preview" : d.synthetic ? " synthetic" : "");
   $("meta").textContent = `Market data as of ${d.as_of} (IST) · generated ${ist(d.generated_at)}` + (state.updated ? ` · page refreshed ${state.updated}` : "");
   const age = (Date.now() - Date.parse(d.generated_at)) / 36e5, w = $("warn");
@@ -118,7 +121,7 @@ function cell(col, i) {
   if (col.text) return h("td", { class: c }, col.val(i) ?? "");
   if (col.flags) { const f = flagsOf(i); return h("td", { class: c }, f.length ? f.slice(0, 2).map(x => h("span", { class: "badge bad", title: x }, humanCat(x))).concat(f.length > 2 ? [h("span", { class: "badge", title: f.slice(2).join(", ") }, `+${f.length - 2}`)] : []) : h("span", { class: "badge" }, "none")); }
   const m = col.metricFn ? col.metricFn(i) : col.metric ? M(i, col.metric) : null;
-  if (col.cell) { const p = col.cell(i); if (!p) return h("td", { class: "na " + c, title: "no observation" }, "n/a"); if (p.value === null) return h("td", { class: "wh " + c, title: "not cleared for display" }, "withheld"); return h("td", { class: c }, col.fmt(p.value)); }
+  if (col.cell) { const p = col.cell(i); if (!p) return h("td", { class: "na " + c, title: "no observation" }, "n/a"); if (p.disputed) return h("td", { class: "wh " + c, title: "two sources disagree on this observation; it is not shown" }, "disputed"); if (p.value === null) return h("td", { class: "wh " + c, title: "not cleared for display" }, "withheld"); return h("td", { class: c }, col.fmt(p.value)); }
   if (!m) return h("td", { class: "na " + c, title: "not defined for this instrument" }, "—");
   if (m.value !== null && m.value !== undefined) return h("td", { class: c, title: (m.flags || []).join(", ") }, col.fmt(m.value));
   if (m.withheld) return h("td", { class: "wh " + c, title: (m.withheld_reasons || []).join("; ") }, "withheld");
@@ -168,11 +171,11 @@ function barChart(items) {
   const out = [h("p", { class: "note" }, "Yield definitions differ by instrument type, so bars are grouped by type and never mixed."), legend()];
   const max = Math.max(...withY.map(i => mv(i, "ttm_yield")));
   for (const [type, list] of Object.entries(groups)) {
-    const W = 560, rowH = 28, labelW = 200, H = list.length * rowH + 8;
+    const total_w = Math.max(300, Math.min(900, document.documentElement.clientWidth - 70)), labelW = total_w < 560 ? 130 : 200, W = total_w - labelW - 70, rowH = 28, H = list.length * rowH + 8;
     const svg = s("svg", { width: "100%", viewBox: `0 0 ${W + labelW + 70} ${H}`, role: "img", "aria-label": `${type} headline yields`, "data-testid": "bars-" + type });
     list.forEach((i, n) => {
       const y = n * rowH + 4, total = mv(i, "ttm_yield"), inc = mv(i, "income_yield"), oth = mv(i, "other_yield"), cap = mv(i, "capital_repayment_yield"), sc = v => (v / max) * W;
-      svg.append(s("text", { x: 0, y: y + 14 }, i.name.length > 32 ? i.name.slice(0, 31) + "…" : i.name));
+      svg.append(s("text", { x: 0, y: y + 14 }, i.name.length > labelW / 6.2 ? i.name.slice(0, Math.floor(labelW / 6.2) - 1) + "…" : i.name));
       if (inc !== null && oth !== null && cap !== null) { let x = labelW; for (const [v, c] of [[inc, COLORS.income], [oth, COLORS.other], [cap, COLORS.capital]]) { svg.append(s("rect", { x, y, width: Math.max(sc(v), 0), height: 18, fill: c }, s("title", {}, pct(v)))); x += sc(v); } }
       else svg.append(s("rect", { x: labelW, y, width: sc(total), height: 18, fill: COLORS.total }));
       svg.append(s("text", { x: labelW + sc(total) + 6, y: y + 14 }, pct(total)));
@@ -183,7 +186,7 @@ function barChart(items) {
 }
 function lineChart(points, label, unit) {
   if (points.length < 2) return h("p", { class: "note" }, `${label}: no history available${points.length ? " (one observation)" : ""}.`);
-  const W = 600, H = 170, P = 44, xs = points.map(p => Date.parse(p[0])), ys = points.map(p => p[1]);
+  const W = cw(), H = 170, P = 44, xs = points.map(p => Date.parse(p[0])), ys = points.map(p => p[1]);
   const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys), dy = y1 - y0 || 1;
   const X = t => P + ((t - x0) / (x1 - x0 || 1)) * (W - P - 10), Y = v => H - 26 - ((v - y0) / dy) * (H - 40);
   return h("div", {}, h("p", { class: "note" }, label), s("svg", { width: "100%", viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": label },
@@ -194,7 +197,7 @@ function lineChart(points, label, unit) {
 function priceYieldChart(prices, trend) {
   if (prices.length < 2) return lineChart(prices, "Price history (₹)", "");
   if (trend.length < 2) return h("div", {}, lineChart(prices, "Price history (₹)", ""), h("p", { class: "note" }, "Headline yield trend: not shown. It needs a full trailing year of verified distributions inside the recorded history."));
-  const W = 600, H = 190, P = 46, R = 50, all = prices.map(p => Date.parse(p[0])).concat(trend.map(p => Date.parse(p[0])));
+  const W = cw(), H = 190, P = 46, R = 50, all = prices.map(p => Date.parse(p[0])).concat(trend.map(p => Date.parse(p[0])));
   const x0 = Math.min(...all), x1 = Math.max(...all), X = t => P + ((t - x0) / (x1 - x0 || 1)) * (W - P - R);
   const scale = pts => { const v = pts.map(p => p[1]), lo = Math.min(...v), hi = Math.max(...v), d = hi - lo || 1; return [lo, hi, y => H - 28 - ((y - lo) / d) * (H - 44)]; };
   const [pl, ph, PY] = scale(prices), [yl, yh, YY] = scale(trend);
@@ -208,7 +211,7 @@ function priceYieldChart(prices, trend) {
 }
 function distChart(hist) {
   if (!hist.length) return h("p", { class: "note" }, "No published distribution history.");
-  const W = 600, H = 180, P = 34, max = Math.max(...hist.map(d => d.total)), bw = Math.max(6, (W - P) / hist.length - 4);
+  const W = cw(), H = 180, P = 34, max = Math.max(...hist.map(d => d.total)), bw = Math.max(4, (W - P) / hist.length - 4);
   const svg = s("svg", { width: "100%", viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "Distribution per payment", "data-testid": "dist-chart" });
   hist.forEach((d, n) => {
     const x = P + n * ((W - P) / hist.length), sc = v => (v / max) * (H - 44); let y = H - 24;
@@ -256,7 +259,7 @@ function renderDrawer() {
     h("div", { class: "dhead" }, h("div", {}, h("h2", {}, i.name), h("div", {}, h("span", { class: "badge type t-" + i.type }, i.type === "INVIT" ? "InvIT" : i.type), i.etf_category ? h("span", { class: "badge" }, humanCat(i.etf_category)) : null, h("span", { class: "badge" }, i.key), i.isin ? h("span", { class: "badge" }, "ISIN " + i.isin) : null)),
       h("button", { type: "button", class: "btn icon", "aria-label": "Close detail", "data-testid": "drawer-close", onclick: () => d.close() }, "✕")),
     h("div", { class: "dbody" },
-      h("div", { class: "kpis" }, kpi("Last price", i, null, rupee, () => { const p = i.latest.price; return p ? { value: p.value, withheld: p.value === null, withheld_reasons: ["not cleared for display"] } : null; }),
+      h("div", { class: "kpis" }, kpi("Last price", i, null, rupee, () => { const p = i.latest.price; return p ? { value: p.value, withheld: p.value === null, withheld_reasons: [p.disputed ? "sources disagree on this price" : "not cleared for display"] } : null; }),
         isEtf ? [kpi("Premium / (discount)", i, null, pct, premiumMetric), kpi("1y NAV return", i, "nav_return_1y", pct), kpi("Top-10 weight", i, "holdings_top10_weight", pct)]
           : [kpi("Headline TTM yield", i, "ttm_yield", pct), kpi("Income yield", i, "income_yield", pct), kpi("Premium / (discount) to NAV", i, null, pct, premiumMetric)]),
       isEtf ? lineChart(i.history.navs, "NAV history (₹)", "") : [h("h3", {}, "Price and headline yield"), priceYieldChart(i.history.prices, i.history.yield_trend)],
@@ -316,7 +319,7 @@ const ALERT_RULES = {
 };
 const BLOCK = ["UNVERIFIED_SOURCE", "PRICE_STALE", "NAV_STALE", "NAV_UNVERIFIED", "SOURCE_DISCREPANCY", "AMOUNT_UNAVAILABLE_IN_WINDOW", "COMPONENTS_DO_NOT_RECONCILE"];
 function reliable(i, metric) {
-  if (metric === "price") { const p = i.latest.price; if (!p || p.value === null) return null; const age = (Date.parse(state.data.as_of) - Date.parse(p.date)) / 864e5; return age <= 3 ? p.value : null; }
+  if (metric === "price") { const p = i.latest.price; if (!p || p.value === null || p.disputed || (i.open_discrepancies || []).some(x => x.field === "price")) return null; const age = (Date.parse(state.data.as_of) - Date.parse(p.date)) / 864e5; return age <= 3 ? p.value : null; }
   const m = metric === "premium" ? premiumMetric(i) : M(i, metric);
   if (!m || m.value === null || m.value === undefined || !m.publishable || (m.flags || []).some(f => BLOCK.includes(f))) return null;
   return m.value;

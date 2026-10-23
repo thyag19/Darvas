@@ -184,3 +184,11 @@ def test_market_and_schedule_blocks(demo_ds):
     m = export.build_dataset(conn, reg, sat, "public", CAL)["market"]
     assert not m["open"] and m["reason"] == "WEEKEND" and m["next_open"] == "2026-10-26T03:45:00Z"
     assert export.build_dataset(conn, reg, sat, "public")["market"] == {"known": False}      # honest when no calendar is given
+
+
+def test_a_disputed_price_date_is_withheld_and_left_out_of_every_series(demo_ds):
+    _, _, ds = demo_ds
+    reit = by(ds)["DEMO_REIT_A"]
+    assert reit["latest"]["price"]["disputed"] and reit["latest"]["price"]["value"] is None
+    assert "2026-10-21" not in [d for d, _ in reit["history"]["prices"]]              # never charted
+    assert by(ds)["DEMO_INVIT_A"]["latest"]["price"]["disputed"] is False and by(ds)["DEMO_INVIT_A"]["latest"]["price"]["value"] == 102.0
